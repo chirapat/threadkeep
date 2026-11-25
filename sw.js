@@ -1,5 +1,5 @@
 /* ThreadKeep service worker: keeps the app itself available offline and serves saved images. */
-const APP_CACHE = 'tk-app-v1';
+const APP_CACHE = 'tk-app-v2';
 const MEDIA_CACHE = 'tk-media-v1';
 const APP_FILES = ['./', 'index.html', 'app.js', 'styles.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
@@ -20,10 +20,10 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
 
-  // App files: network first (so updates arrive), cached copy when offline.
+  // App files: network first, skipping the browser's HTTP cache so updates arrive straight away; saved copy when offline.
   if (url.origin === self.location.origin) {
     e.respondWith(
-      fetch(req)
+      fetch(req, { cache: 'no-cache' })
         .then(res => {
           if (res.ok) { const copy = res.clone(); caches.open(APP_CACHE).then(c => c.put(req, copy)); }
           return res;

@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const APP_VERSION = '2.1';
+const APP_VERSION = '2.2';
 const MEDIA_CACHE = 'tk-media-v1';
 const BUNDLE_PREFIX = 'THREADKEEP:';
 const SHORTCUT_URL = 'shortcut/Save%20to%20ThreadKeep.shortcut';
@@ -336,6 +336,8 @@ async function importText(text) {
   try { bundle = JSON.parse(text.slice(BUNDLE_PREFIX.length)); }
   catch { toast('The copied data is incomplete. Run the Shortcut again.', 5000); return; }
   if (bundle.error) { toast(bundle.error, 6000); return; }
+  try { await navigator.clipboard.writeText(' '); } catch {} // don't leave the copied data (and sign-in pass) on the clipboard
+  if (bundle.tk === 2) return importFromReddit(bundle);
 
   const fromSub = bundle.source === 'subreddit';
   let threads = (bundle.threads || []).filter(t => t?.[0]?.data?.children?.[0]?.data?.id);
@@ -363,6 +365,75 @@ async function importText(text) {
     toast('Saved ' + plural(saved, 'thread') + '.');
   }
   if (error) setTimeout(() => toast(error, 6000), 7000);
+  render();
+}
+
+/* ---- Version 2 Shortcut: it hands over your choices + Reddit's sign-in pass, and ThreadKeep downloads. ---- */
+// The pass is used only for these requests to oauth.reddit.com and is never stored.
+
+const RANGE_LABEL = { day: 'today', week: 'this week', month: 'this month', year: 'this year', all: 'of all time' };
+
+async function redditApi(path, token) {
+  let res;
+  try { res = await fetch('https://oauth.reddit.com' + path, { headers: { Authorization: 'Bearer ' + token }, credentials: 'omit' }); }
+  catch { throw new Error(navigator.onLine ? 'Couldn’t reach Reddit. Try again.' : 'You’re offline.'); }
+  if (res.status === 401) throw new Error('Reddit’s sign-in pass has expired. Reload the Reddit page in Safari, then run the Shortcut again.');
+  if (res.status === 403) throw new Error('Reddit refused the download (403). Make sure you’re signed in at reddit.com in Safari.');
+  if (res.status === 429) throw new Error('Reddit says slow down. Wait a minute and try again.');
+  if (!res.ok) throw new Error('Reddit error ' + res.status + '. Try again.');
+  return res.json();
+}
+
+async function importFromReddit(b) {
+  const pick = b.pick || {};
+  const comments = Math.min(500, Math.max(5, pick.comments || 50));
+  const depth = comments <= 25 ? 3 : comments <= 100 ? 5 : 8;
+  const threadPath = (id) => '/comments/' + id + '?limit=' + comments + '&depth=' + depth + '&sort=top&raw_json=1';
+  const hasToken = !!b.token && (!b.exp || b.exp * 1000 > Date.now() + 30000);
+
+  // This post only
+  if (pick.onlyThisPost) {
+    if (!b.postId) { toast('You chose “This post only”, but no post was open. Open a post, or choose Top posts.', 6000); return; }
+    progress('Downloading…', 0.3);
+    let json = null, note = '';
+    if (hasToken) {
+      try { json = await redditApi(threadPath(b.postId), b.token); }
+      catch (e) { note = e.message; }
+    }
+    if (!json && b.page) { json = b.page; note = 'Saved from the page (Reddit’s download didn’t work, so fewer comments).'; }
+    if (!json) { progress(null); toast(note || 'Couldn’t find your Reddit sign-in in Safari. Sign in at reddit.com, then try again.', 7000); return; }
+    try {
+      progress('Saving…', 0.7);
+      const id = await saveThread(json);
+      progress(null);
+      if (note) setTimeout(() => toast(note, 6000), 400);
+      location.hash = '#/p/' + id; route();
+    } catch (e) { progress(null); toast(e.message, 6000); render(); }
+    return;
+  }
+
+  // Top N of a subreddit
+  if (!b.sub) { toast('Open a subreddit (like r/AskReddit) or one of its posts, then run the Shortcut.', 6000); return; }
+  if (!hasToken) { toast('Couldn’t find your Reddit sign-in in Safari. Sign in at reddit.com, reload the page, then try again.', 7000); return; }
+  const top = Math.min(50, Math.max(1, pick.top || 10));
+  const t = RANGE_LABEL[pick.t] ? pick.t : 'day';
+  let ids;
+  try {
+    progress('Finding the top ' + top + ' ' + RANGE_LABEL[t] + ' in r/' + b.sub + '…', 0.02);
+    const list = await redditApi('/r/' + b.sub + '/top?t=' + t + '&limit=' + Math.min(100, top + 5) + '&raw_json=1', b.token);
+    ids = (list?.data?.children || []).map(c => c.data).filter(d => d && !d.stickied && (settings.showNsfw || !d.over_18)).slice(0, top).map(d => d.id);
+  } catch (e) { progress(null); toast(e.message, 7000); return; }
+  if (!ids.length) { progress(null); toast('No posts found in r/' + b.sub + ' ' + RANGE_LABEL[t] + '.', 5000); return; }
+
+  let saved = 0, error = '';
+  for (let i = 0; i < ids.length; i++) {
+    progress('Saving ' + (i + 1) + ' of ' + ids.length + ' from r/' + b.sub + '…', i / ids.length);
+    try { await saveThread(await redditApi(threadPath(ids[i]), b.token), { fromSubreddit: true }); saved++; }
+    catch (e) { error = e.message; if (/Storage is full|expired|refused|slow down|offline/.test(error)) break; }
+  }
+  progress(null);
+  if (saved === ids.length) toast('Saved the top ' + saved + ' ' + RANGE_LABEL[t] + ' from r/' + b.sub + '.', 5000);
+  else toast('Saved ' + saved + ' of ' + ids.length + '. ' + error, 8000);
   render();
 }
 
@@ -423,7 +494,7 @@ function setupStepsHtml() {
 function howToHtml() {
   return `<div class="howto">
     <div><span class="num">1</span><p>In <b>Safari</b>, open a Reddit post or a subreddit like <b>r/AskReddit</b>.</p></div>
-    <div><span class="num">2</span><p>Tap <b>Share</b> → <b>Save to ThreadKeep</b>, then pick what to save: this post or the top posts, from when, and how many comments.</p></div>
+    <div><span class="num">2</span><p>Tap <b>Share</b> → <b>Save to ThreadKeep</b>, then pick this post or the top posts, from when, and how many comments.</p></div>
     <div><span class="num">3</span><p>Come back and tap <b>Paste from Shortcut</b>.</p></div>
   </div>`;
 }
@@ -591,7 +662,7 @@ async function renderSettings() {
         ${setupStepsHtml()}
         <p class="label">Saving</p>
         ${howToHtml()}
-        <p class="muted small">Big choices (like top 25 with 200 comments) may need more than one run, because iPhone gives the Shortcut only a few seconds. Run it again with the same choices and it fetches what’s missing.</p>
+        <p class="muted small">ThreadKeep downloads using your Safari sign-in, so even top 25 with 200 comments saves in one run.</p>
         <details><summary>The Shortcut link doesn’t work?</summary>
           <ol class="steps">
             <li>Open <b>Shortcuts</b> → <b>+</b>, name it <b>Save to ThreadKeep</b>.</li>

@@ -1,95 +1,50 @@
 const PICK = { what: "￼", range: "￼", comments: "￼" };
 // ↑ The Shortcut fills these in from its three menus (What to save? / From when? / Comments per thread).
-//   If you paste this script into a Shortcut by hand, you can type values instead, e.g.
+//   If you paste this script into a Shortcut by hand, type values instead, e.g.
 //   { what: "Top 10 posts", range: "This week", comments: "100 comments" }.
 //
-// "Save to ThreadKeep" — runs inside the Reddit page open in Safari (Shortcuts → Run JavaScript on Web Page),
-// using your signed-in Reddit session. Shortcuts gives it only a few seconds, so it works against a deadline
-// and remembers what it already sent: running it again continues where it stopped.
+// "Save to ThreadKeep" — runs inside the Reddit page open in Safari (Shortcuts → Run JavaScript on Web Page).
+// Safari pauses the page while a Shortcut runs, so this script does NO downloading: it finishes instantly and hands
+// ThreadKeep (1) your choices, (2) the post shown on screen, and (3) Reddit's sign-in pass for this browser
+// (the token_v2 cookie that reddit.com itself uses). ThreadKeep then downloads from Reddit's API, with no time limit.
 (() => {
-  const DEADLINE_MS = 2500;
-  let done = false;
-  const send = (o) => { if (done) return; done = true; completion('THREADKEEP:' + JSON.stringify(o)); };
-
-  // Read the menu choices (with safe defaults if a value is missing).
-  const filled = (v) => typeof v === 'string' && v.length > 0 && v !== '￼';
-  const whatText = filled(PICK.what) ? PICK.what : 'This post only';
-  const onlyThisPost = /this post/i.test(whatText);
-  const topCount = Math.min(50, Math.max(1, parseInt(whatText.replace(/\D+/g, ''), 10) || 10));
-  const rangeText = filled(PICK.range) ? PICK.range.toLowerCase() : 'today';
-  const t = /week/.test(rangeText) ? 'week' : /month/.test(rangeText) ? 'month' : /year/.test(rangeText) ? 'year' : /all/.test(rangeText) ? 'all' : 'day';
-  const rangeLabel = { day: 'today', week: 'this week', month: 'this month', year: 'this year', all: 'of all time' }[t];
-  const commentCount = Math.min(500, Math.max(5, parseInt(String(filled(PICK.comments) ? PICK.comments : '').replace(/\D+/g, ''), 10) || 50));
-  const depth = commentCount <= 25 ? 3 : commentCount <= 100 ? 5 : 8;
-
+  const send = (o) => completion('THREADKEEP:' + JSON.stringify(o));
   try {
     if (!/(^|\.)reddit\.com$/.test(location.hostname)) {
       return send({ error: 'Open a Reddit post or subreddit in Safari first.' });
     }
-    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-    const get = async (url) => {
-      const r = await fetch(url, { credentials: 'include', signal: ctrl && ctrl.signal });
-      if (!r.ok) throw new Error('Reddit said ' + r.status + (r.status === 403 ? '. Make sure you are signed in to Reddit in Safari.' : '.'));
-      return r.json();
+    const filled = (v) => typeof v === 'string' && v.length > 0 && v !== '￼';
+    const whatText = filled(PICK.what) ? PICK.what : 'This post only';
+    const rangeText = filled(PICK.range) ? PICK.range.toLowerCase() : 'today';
+    const pick = {
+      onlyThisPost: /this post/i.test(whatText),
+      top: Math.min(50, Math.max(1, parseInt(whatText.replace(/\D+/g, ''), 10) || 10)),
+      t: /week/.test(rangeText) ? 'week' : /month/.test(rangeText) ? 'month' : /year/.test(rangeText) ? 'year' : /all/.test(rangeText) ? 'all' : 'day',
+      comments: Math.min(500, Math.max(5, parseInt(String(filled(PICK.comments) ? PICK.comments : '').replace(/\D+/g, ''), 10) || 50)),
     };
+
+    const cookie = document.cookie.match(/(?:^|;\s*)token_v2=([^;]+)/);
+    const token = cookie ? decodeURIComponent(cookie[1]) : '';
+    let exp = 0;
+    try { exp = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp || 0; } catch (e) {}
+
     const post = location.pathname.match(/\/comments\/([a-z0-9]+)/i);
     const sub = location.pathname.match(/^\/r\/([A-Za-z0-9_]+)/);
+    let page = null;
+    try { if (post) page = scrapePage(pick.comments); } catch (e) {}
 
-    if (onlyThisPost) {
-      if (!post) return send({ error: 'You chose “This post only”, but no post is open. Open a post, or choose Top posts.' });
-      setTimeout(() => {
-        if (done) return;
-        if (ctrl) ctrl.abort();
-        const th = scrapePage();
-        send(th ? { tk: 1, source: 'post', from: 'page', threads: [th] } : { error: 'Reddit was too slow. Scroll down to load comments, then run the Shortcut again.' });
-      }, DEADLINE_MS);
-      get('/comments/' + post[1] + '.json?limit=' + commentCount + '&depth=' + depth + '&sort=top&raw_json=1')
-        .then(th => send({ tk: 1, source: 'post', threads: [th] }))
-        .catch(err => {
-          if (done) return;
-          const th = scrapePage();
-          send(th ? { tk: 1, source: 'post', from: 'page', threads: [th] } : { error: String((err && err.message) || err) });
-        });
-      return;
-    }
-
-    if (!sub) return send({ error: 'Open a subreddit (like r/AskReddit) or one of its posts, then run the Shortcut.' });
-
-    // Top N of the subreddit. Posts already sent for these same choices are skipped, so a second run fetches the rest.
-    const key = ['threadkeep-sent', sub[1].toLowerCase(), t, topCount, commentCount, new Date().toISOString().slice(0, 10)].join('-');
-    let sent = [];
-    try { sent = JSON.parse(localStorage.getItem(key) || '[]'); } catch (e) {}
-    const threads = [], gotIds = [];
-    let wanted = 0;
-    const finish = () => {
-      if (done) return;
-      if (ctrl) ctrl.abort();
-      try { localStorage.setItem(key, JSON.stringify(sent.concat(gotIds))); } catch (e) {}
-      if (!threads.length && !wanted) return send({ error: 'Reddit was too slow. Try again in a moment.' });
-      send({ tk: 1, source: 'subreddit', sub: sub[1], range: rangeLabel, threads, wanted, have: Math.min(wanted, sent.length + gotIds.length) });
-    };
-    setTimeout(finish, DEADLINE_MS);
-    get('/r/' + sub[1] + '/top.json?t=' + t + '&limit=' + Math.min(100, topCount + 5) + '&raw_json=1')
-      .then(list => {
-        const ids = list.data.children.map(c => c.data).filter(d => !d.stickied).slice(0, topCount).map(d => d.id);
-        wanted = ids.length;
-        sent = sent.filter(id => ids.includes(id));
-        let todo = ids.filter(id => !sent.includes(id));
-        if (!todo.length) { sent = []; todo = ids; } // already had them all: start over (refreshes comments)
-        return Promise.all(todo.map(id =>
-          get('/comments/' + id + '.json?limit=' + commentCount + '&depth=' + depth + '&sort=top&raw_json=1')
-            .then(th => { if (!done) { threads.push(th); gotIds.push(id); } })
-            .catch(() => {})
-        ));
-      })
-      .then(finish)
-      .catch(err => send({ error: String((err && err.message) || err) }));
+    send({
+      tk: 2, pick, token, exp,
+      postId: post ? post[1] : '', sub: sub ? sub[1] : '',
+      page,
+      signedIn: !!document.querySelector('[user-logged-in="true"], faceplate-tracker[noun="user_menu"], #expand-user-drawer-button'),
+    });
   } catch (e) {
     send({ error: String((e && e.message) || e) });
   }
 
-  // Builds Reddit-style thread data from the post and comments already on the page (used when Reddit is slow).
-  function scrapePage() {
+  // Builds Reddit-style thread data from the post and comments already on the page.
+  function scrapePage(maxComments) {
     const sp = document.querySelector('shreddit-post');
     if (!sp) return null;
     const attr = (el, ...names) => { for (const n of names) { const v = el.getAttribute(n); if (v != null) return v; } return ''; };
@@ -124,7 +79,7 @@ const PICK = { what: "￼", range: "￼", comments: "￼" };
       } };
     };
     const tree = document.querySelector('shreddit-comment-tree');
-    const top = (tree ? [...tree.querySelectorAll(':scope > shreddit-comment')] : [...document.querySelectorAll('shreddit-comment[depth="0"]')]).slice(0, commentCount);
+    const top = (tree ? [...tree.querySelectorAll(':scope > shreddit-comment')] : [...document.querySelectorAll('shreddit-comment[depth="0"]')]).slice(0, maxComments);
     return [{ data: { children: [{ kind: 't3', data: p }] } }, { data: { children: top.map(toNode) } }];
   }
 })();

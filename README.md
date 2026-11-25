@@ -29,7 +29,10 @@ The Shortcut asks three quick questions:
 2. **From when?** Today, this week, this month, this year, or all time (skipped for a single post).
 3. **How many comments per thread?** 25, 50, 100 or 200.
 
-Big choices may need more than one run, because iPhone gives the Shortcut only a few seconds. Run it again with the same choices and it fetches what's missing.
+The Shortcut itself finishes instantly: it hands ThreadKeep your choices and your Reddit sign-in from Safari, and ThreadKeep does the downloading with a progress bar. So even top 25 with 200 comments arrives in one run.
+
+### About your Reddit sign-in
+To download while signed in, the Shortcut passes ThreadKeep the sign-in token that reddit.com already keeps in your Safari (its `token_v2` cookie). ThreadKeep uses it only for these requests to Reddit, never stores it, and clears the clipboard right after pasting. The token passes briefly through the clipboard, as everything a Shortcut outputs does. It expires on its own, usually within a day.
 
 ## Reading
 
@@ -45,9 +48,9 @@ Big choices may need more than one run, because iPhone gives the Shortcut only a
 
 ## Limitations
 
-- **Saving isn't automatic.** iPhone doesn't let web apps run in the background, and Reddit blocks downloads that aren't signed in.
+- **Saving isn't automatic.** iPhone doesn't let web apps run in the background, so you start each save with the Shortcut. Reddit also blocks downloads that aren't signed in, which is why the Shortcut passes your Safari sign-in.
 - **Videos** aren't saved. Only their preview picture is.
-- **Very large threads** save the top comments rather than every reply.
+- **Very large threads** save the top comments (up to 200) rather than every reply.
 
 ## Hosting your own copy
 

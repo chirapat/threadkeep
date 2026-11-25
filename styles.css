@@ -176,6 +176,18 @@ input[type=url], input[type=text], input[type=search], select {
 .c.collapsed > .c-head::after { content: "  (tap to expand)"; }
 .more { font-size: 13px; color: var(--muted); padding: 8px 0 0 12px; }
 
+/* Install steps (shown in Safari only) */
+.install-card {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: var(--radius); padding: 12px 14px; margin-bottom: 14px;
+}
+.install-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.install-head h2 { margin: 0; font-size: 16px; }
+.install-head .icon-btn { width: 32px; height: 32px; font-size: 22px; color: var(--muted); }
+.install-card .steps { margin: 6px 0 0; font-size: 15px; }
+.install-card code { font-size: 13px; word-break: break-all; }
+
 /* Auto-download status + filter chips */
 .sync {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;

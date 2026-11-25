@@ -573,6 +573,15 @@ let libraryFilter = '';
 let libSub = '';
 const blurOn = (p) => p.nsfw && settings.nsfw !== 'show';
 
+// Show install steps on iPhone/iPad when the app is opened in the browser instead of from the Home Screen.
+function showInstallHelp() {
+  const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  let hidden = false;
+  try { hidden = sessionStorage.getItem('tk-install-hidden') === '1'; } catch {}
+  return ios && !standalone && !hidden;
+}
+
 async function renderLibrary() {
   $('#title').textContent = 'ThreadKeep';
   $('#backBtn').hidden = true;
@@ -591,6 +600,15 @@ async function renderLibrary() {
   const ls = lastSync();
 
   view.innerHTML = `
+    ${showInstallHelp() ? `<section class="install-card">
+      <div class="install-head"><h2>Install it on your iPhone</h2>
+        <button class="icon-btn" id="installClose" aria-label="Hide for now">×</button></div>
+      <ol class="steps">
+        <li>Open Safari (it has to be Safari) and go to <code>https://chirapat.github.io/threadkeep/</code></li>
+        <li>Tap the Share button (the square with an arrow) → scroll down → Add to Home Screen → Add.</li>
+        <li>From now on, always open ThreadKeep from the new icon on your Home Screen. Your saved posts live there, separate from Safari.</li>
+      </ol>
+    </section>` : ''}
     <section class="save-card">
       <button class="btn primary block" id="pasteBtn">Paste link &amp; save</button>
       <form class="row" id="saveForm" style="margin-top:8px">
@@ -629,6 +647,8 @@ async function renderLibrary() {
       savePostFromInput(text);
     } catch { toast('Couldn’t read the clipboard — paste into the box instead.'); $('#urlInput').focus(); }
   };
+  const ic = $('#installClose');
+  if (ic) ic.onclick = () => { try { sessionStorage.setItem('tk-install-hidden', '1'); } catch {} renderLibrary(); };
   const chips = $('.chips');
   if (chips) chips.onclick = (e) => {
     const b = e.target.closest('button'); if (!b) return;

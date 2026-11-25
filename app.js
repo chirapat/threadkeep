@@ -597,7 +597,7 @@ async function renderLibrary() {
         <input type="url" id="urlInput" placeholder="…or type a reddit.com link" autocomplete="off" autocapitalize="off">
         <button class="btn" type="submit">Save</button>
       </form>
-      ${!settings.clientId ? `<p class="hint">Tip: add your free Reddit client ID in <a href="#/settings">Settings</a> for reliable downloads.</p>` : ''}
+      ${!settings.clientId && posts.some(p => p.status === 'error' && /blocked/i.test(p.error || '')) ? `<p class="hint" style="color:var(--bad)">Reddit is blocking downloads on this connection. Try another network (Wi-Fi vs mobile data), or add a free Reddit client ID in <a href="#/settings">Settings</a>.</p>` : ''}
     </section>
     <div class="meter">
       <div class="meter-bar"><div class="meter-fill ${pct >= 99 ? 'full' : ''}" style="width:${pct}%"></div></div>
@@ -833,7 +833,8 @@ async function renderSettings() {
     </section>
 
     <section class="group"><h3>Reddit access</h3>
-      <div class="field"><label for="cid">Reddit client ID (free)</label>
+      <div class="field"><label for="cid">Reddit client ID (optional)</label>
+        <p class="hint" style="margin:0 0 8px">Not needed if saving already works. Only add one if Reddit blocks downloads.</p>
         <input type="text" id="cid" value="${esc(settings.clientId)}" placeholder="e.g. aB3xYz_12QwErT" autocomplete="off" autocapitalize="off" spellcheck="false">
         <details style="margin-top:10px"><summary>How to get one (2 minutes)</summary>
           <ol class="steps">

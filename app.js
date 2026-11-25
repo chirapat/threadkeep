@@ -523,7 +523,7 @@ async function syncSubs(force = false) {
   if (syncRunning || !navigator.onLine || !settings.subs.length) return 0;
   if (!force && (!settings.syncHours || Date.now() - lastSync() < settings.syncHours * 3600000)) return 0;
   syncRunning = true;
-  let queued = 0;
+  let queued = 0, failed = 0, lastErr = '';
   try {
     const seen = getSeen();
     const existing = new Set((await db.all('posts')).map(p => p.id));
@@ -533,7 +533,7 @@ async function syncSubs(force = false) {
       if (t) q.set('t', t);
       let list;
       try { list = await (await redditGet('/r/' + sub + '/' + sort + '?' + q)).json(); }
-      catch (e) { toast('r/' + sub + ': ' + e.message, 4000); if (e.retry) break; continue; }
+      catch (e) { failed++; lastErr = 'r/' + sub + ': ' + e.message; if (e.retry) break; continue; }
       let n = 0;
       const newIds = [];
       for (const ch of list?.data?.children || []) {
@@ -551,10 +551,17 @@ async function syncSubs(force = false) {
       }
       addSeen(newIds);
     }
-    try { localStorage.setItem('tk-lastsync', String(Date.now())); } catch {}
+    try {
+      // Remember the failure so the home page can show it; only count the check as done if something worked.
+      if (failed) localStorage.setItem('tk-syncerr', lastErr); else localStorage.removeItem('tk-syncerr');
+      if (failed < settings.subs.length) localStorage.setItem('tk-lastsync', String(Date.now()));
+    } catch {}
   } finally { syncRunning = false; }
-  if (queued) { toast('Downloading ' + queued + ' new post' + (queued > 1 ? 's' : '') + ' from your subreddits'); render(); runQueue(); }
-  return queued;
+  if (failed) toast(lastErr, 6000);
+  else if (queued) toast('Downloading ' + queued + ' new post' + (queued > 1 ? 's' : '') + ' from your subreddits');
+  render();
+  if (queued) runQueue();
+  return { queued, failed };
 }
 
 async function deletePost(id, silent) {
@@ -598,6 +605,8 @@ async function renderLibrary() {
   if (libSub && !subCounts[libSub]) libSub = '';
   const shown = visible.filter(p => (!libSub || p.subreddit === libSub) && (!f || (p.title + ' ' + p.subreddit).toLowerCase().includes(f)));
   const ls = lastSync();
+  let syncErr = '';
+  try { syncErr = localStorage.getItem('tk-syncerr') || ''; } catch {}
 
   view.innerHTML = `
     ${showInstallHelp() ? `<section class="install-card">
@@ -622,7 +631,8 @@ async function renderLibrary() {
       <div class="meter-text"><span>${fmtBytes(used)} of ${fmtBytes(limitBytes())} used</span><span>${posts.length} saved</span></div>
     </div>
     ${settings.subs.length ? `<div class="sync">
-      <span>Auto-download: ${settings.subs.map(s => 'r/' + esc(s)).join(', ')}<br><small>${ls ? 'Checked ' + fmtAgo(ls / 1000) + ' ago' : 'Not checked yet'}</small></span>
+      <span>Auto-download: ${settings.subs.map(s => 'r/' + esc(s)).join(', ')}<br><small>${ls ? 'Checked ' + fmtAgo(ls / 1000) + ' ago' : 'Not checked yet'}</small>
+      ${syncErr ? `<br><small style="color:var(--bad)">Last check failed: ${esc(syncErr)}</small>` : ''}</span>
       <button class="btn" id="syncBtn">Check now</button></div>`
       : `<p class="hint" style="margin:0 2px 12px">Want posts downloaded automatically from subreddits like r/AskReddit? Add them in <a href="#/settings">Settings</a>.</p>`}
     <label class="nsfw-toggle">
@@ -667,8 +677,8 @@ async function renderLibrary() {
   if (sb) sb.onclick = async () => {
     if (!navigator.onLine) { toast('You’re offline.'); return; }
     sb.disabled = true; sb.textContent = 'Checking…';
-    const n = await syncSubs(true);
-    if (!n) toast('No new posts right now.');
+    const r = await syncSubs(true);
+    if (r && !r.failed && !r.queued) toast('No new posts right now.');
     render();
   };
   $('#saveForm').onsubmit =(e) => { e.preventDefault(); const v = $('#urlInput').value; $('#urlInput').value = ''; savePostFromInput(v); };

@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const APP_VERSION = '2.0';
+const APP_VERSION = '2.1';
 const MEDIA_CACHE = 'tk-media-v1';
 const BUNDLE_PREFIX = 'THREADKEEP:';
 const SHORTCUT_URL = 'shortcut/Save%20to%20ThreadKeep.shortcut';
@@ -356,9 +356,9 @@ async function importText(text) {
   if (error && !saved) { toast(error, 6000); render(); return; }
   if (threads.length === 1) { location.hash = '#/p/' + lastId; route(); return; }
   if (fromSub && bundle.wanted && bundle.have < bundle.wanted) {
-    toast('Saved ' + saved + '. You have ' + bundle.have + ' of today’s top ' + bundle.wanted + ' from r/' + bundle.sub + '. Run the Shortcut again for the rest.', 7000);
+    toast('Saved ' + saved + '. You have ' + bundle.have + ' of the top ' + bundle.wanted + ' ' + (bundle.range || 'today') + ' from r/' + bundle.sub + '. Run the Shortcut again with the same choices for the rest.', 8000);
   } else if (fromSub) {
-    toast('Saved today’s top ' + saved + ' from r/' + bundle.sub + '.', 4000);
+    toast('Saved the top ' + saved + ' ' + (bundle.range || 'today') + ' from r/' + bundle.sub + '.', 4000);
   } else {
     toast('Saved ' + plural(saved, 'thread') + '.');
   }
@@ -422,8 +422,8 @@ function setupStepsHtml() {
 
 function howToHtml() {
   return `<div class="howto">
-    <div><span class="num">1</span><p>In <b>Safari</b>, open a Reddit post, or a subreddit like <b>r/AskReddit</b> for its top 10 today.</p></div>
-    <div><span class="num">2</span><p>Tap <b>Share</b> → <b>Save to ThreadKeep</b>.</p></div>
+    <div><span class="num">1</span><p>In <b>Safari</b>, open a Reddit post or a subreddit like <b>r/AskReddit</b>.</p></div>
+    <div><span class="num">2</span><p>Tap <b>Share</b> → <b>Save to ThreadKeep</b>, then pick what to save: this post or the top posts, from when, and how many comments.</p></div>
     <div><span class="num">3</span><p>Come back and tap <b>Paste from Shortcut</b>.</p></div>
   </div>`;
 }
@@ -591,12 +591,12 @@ async function renderSettings() {
         ${setupStepsHtml()}
         <p class="label">Saving</p>
         ${howToHtml()}
-        <p class="muted small">A subreddit grab saves today’s top 10. If it says some are missing, run it once more for the rest.</p>
+        <p class="muted small">Big choices (like top 25 with 200 comments) may need more than one run, because iPhone gives the Shortcut only a few seconds. Run it again with the same choices and it fetches what’s missing.</p>
         <details><summary>The Shortcut link doesn’t work?</summary>
           <ol class="steps">
             <li>Open <b>Shortcuts</b> → <b>+</b>, name it <b>Save to ThreadKeep</b>.</li>
             <li>Tap <b>ⓘ</b> → turn on <b>Show in Share Sheet</b>, receiving <b>Safari web pages</b>.</li>
-            <li>Add <b>Run JavaScript on Web Page</b> and replace its code with the script (button below).</li>
+            <li>Add <b>Run JavaScript on Web Page</b> and replace its code with the script (button below). Edit its first line to choose what to save, e.g. <code>what: "Top 10 posts", range: "This week", comments: "100 comments"</code>.</li>
             <li>Add <b>Copy to Clipboard</b>.</li>
           </ol>
           <button class="btn small" id="copyScript">Copy the script</button>

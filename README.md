@@ -24,7 +24,12 @@ If the Shortcut link won't import, build it yourself: **Shortcuts → +**, turn 
 2. Tap **Share** → **Save to ThreadKeep**.
 3. Open ThreadKeep and tap **Paste from Shortcut**.
 
-A **post** is saved with its top comments. A **subreddit** saves today's top 10 posts with their comments. If it says some are missing, run it once more and it fetches the rest.
+The Shortcut asks three quick questions:
+1. **What to save?** This post only, or the top 5 / 10 / 25 posts of the subreddit you're in.
+2. **From when?** Today, this week, this month, this year, or all time (skipped for a single post).
+3. **How many comments per thread?** 25, 50, 100 or 200.
+
+Big choices may need more than one run, because iPhone gives the Shortcut only a few seconds. Run it again with the same choices and it fetches what's missing.
 
 ## Reading
 

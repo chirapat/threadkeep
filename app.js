@@ -179,11 +179,11 @@ async function redditGet(path) {
     if (!navigator.onLine) throw new ApiError('Offline. Will download when you are back online.', true);
     throw new ApiError(token
       ? 'Could not reach Reddit. Will retry later.'
-      : 'Reddit blocked the request. Add your free Reddit client ID in Settings.', !!token);
+      : 'Reddit blocked the download. Save it from Safari with the “Save to ThreadKeep” Shortcut (Settings → Saving without a Reddit key).', !!token);
   }
   if (res.status === 401 && token) { localStorage.removeItem('tk-token'); throw new ApiError('Reddit sign-in expired. Will retry.', true); }
   if (res.status === 429) throw new ApiError('Reddit rate limit hit. Will retry in a minute.', true);
-  if (res.status === 403) throw new ApiError(token ? 'This post is private or removed.' : 'Reddit blocked the request. Add your free Reddit client ID in Settings.', false);
+  if (res.status === 403) throw new ApiError(token ? 'This post is private or removed.' : 'Reddit blocked the download. Save it from Safari with the “Save to ThreadKeep” Shortcut (Settings → Saving without a Reddit key).', false);
   if (res.status === 404) throw new ApiError('Post not found.', false);
   if (!res.ok) throw new ApiError('Reddit error ' + res.status + '. Will retry.', true);
   return res;
@@ -396,6 +396,7 @@ async function makeRoom(need, protectId) {
 let queueRunning = false;
 
 async function savePostFromInput(input) {
+  if (String(input || '').trimStart().startsWith(BUNDLE_PREFIX)) return importBundle(input);
   const parsed = parseRedditLink(input);
   if (!parsed) { toast('That doesn’t look like a Reddit post link.'); return; }
   let id = parsed.id;
@@ -440,15 +441,17 @@ async function runQueue() {
   } finally { queueRunning = false; }
 }
 
-async function downloadThread(id, refresh = false) {
+async function downloadThread(id, refresh = false, provided = null) {
   const row = (await db.get('posts', id)) || { id, savedAt: Date.now(), pinned: false };
   row.status = 'downloading'; row.error = '';
   await db.put('posts', row);
   render();
 
-  const q = new URLSearchParams({ limit: '500', depth: String(settings.depth + 1), sort: settings.sort, raw_json: '1' });
-  const res = await redditGet('/comments/' + id + '?' + q);
-  const json = await res.json();
+  let json = provided;
+  if (!json) {
+    const q = new URLSearchParams({ limit: '500', depth: String(settings.depth + 1), sort: settings.sort, raw_json: '1' });
+    json = await (await redditGet('/comments/' + id + '?' + q)).json();
+  }
   const p = json?.[0]?.data?.children?.[0]?.data;
   if (!p) throw new ApiError('Post not found.', false);
 
@@ -520,7 +523,7 @@ function lastSync() { return Number(localStorage.getItem('tk-lastsync') || 0); }
 
 // Looks at each favourite subreddit and queues new posts for download.
 async function syncSubs(force = false) {
-  if (syncRunning || !navigator.onLine || !settings.subs.length) return 0;
+  if (syncRunning || !navigator.onLine || !settings.subs.length || !settings.clientId) return 0;
   if (!force && (!settings.syncHours || Date.now() - lastSync() < settings.syncHours * 3600000)) return 0;
   syncRunning = true;
   let queued = 0, failed = 0, lastErr = '';
@@ -562,6 +565,44 @@ async function syncSubs(force = false) {
   render();
   if (queued) runQueue();
   return { queued, failed };
+}
+
+/* ---------------- Importing threads fetched by the Safari Shortcut ---------------- */
+
+// The "Save to ThreadKeep" Shortcut runs a script on the Reddit page open in Safari (using your signed-in session),
+// fetches the thread data, and copies "THREADKEEP:{...}" to the clipboard. Pasting it here saves the threads.
+const BUNDLE_PREFIX = 'THREADKEEP:';
+
+async function importBundle(text) {
+  let bundle;
+  try { bundle = JSON.parse(text.trim().slice(BUNDLE_PREFIX.length)); }
+  catch { toast('That copied data is incomplete. Run the Shortcut again.', 5000); return; }
+  if (bundle.error) { toast('Shortcut: ' + bundle.error, 6000); return; }
+  const threads = (bundle.threads || []).filter(t => t?.[0]?.data?.children?.[0]?.data?.id);
+  if (!threads.length) { toast('Nothing to save. Open a Reddit post or subreddit in Safari, then run the Shortcut.', 5000); return; }
+  toast('Saving ' + threads.length + ' thread' + (threads.length > 1 ? 's' : '') + '…');
+  let saved = 0, lastId = null;
+  for (const json of threads) {
+    const p = json[0].data.children[0].data;
+    if (p.over_18 && settings.nsfw === 'hide' && bundle.source === 'subreddit') continue;
+    const existing = await db.get('posts', p.id);
+    if (!existing) {
+      await db.put('posts', {
+        id: p.id, title: p.title, subreddit: p.subreddit, author: p.author, nsfw: !!p.over_18,
+        savedAt: Date.now(), status: 'pending', bytes: 0, media: [], pinned: false, auto: bundle.source === 'subreddit',
+      });
+    }
+    try { await downloadThread(p.id, !!existing && existing.status === 'ready', json); saved++; lastId = p.id; }
+    catch (e) {
+      const row = await db.get('posts', p.id);
+      if (row) { row.status = 'error'; row.error = e.message; await db.put('posts', row); }
+      toast(e.message, 5000);
+    }
+  }
+  addSeen(threads.map(t => t[0].data.children[0].data.id));
+  if (saved === 1 && threads.length === 1) location.hash = '#/p/' + lastId;
+  else if (saved) toast('Saved ' + saved + ' thread' + (saved > 1 ? 's' : '') + ' for offline reading.');
+  render();
 }
 
 async function deletePost(id, silent) {
@@ -624,13 +665,14 @@ async function renderLibrary() {
         <input type="url" id="urlInput" placeholder="…or type a reddit.com link" autocomplete="off" autocapitalize="off">
         <button class="btn" type="submit">Save</button>
       </form>
-      ${!settings.clientId && posts.some(p => p.status === 'error' && /blocked/i.test(p.error || '')) ? `<p class="hint" style="color:var(--bad)">Reddit is blocking downloads on this connection. Try another network (Wi-Fi vs mobile data), or add a free Reddit client ID in <a href="#/settings">Settings</a>.</p>` : ''}
+      ${!settings.clientId && posts.some(p => p.status === 'error' && /blocked/i.test(p.error || '')) ? `<p class="hint" style="color:var(--bad)">Reddit blocks downloads that aren’t signed in. Use the <a href="#/settings">Save to ThreadKeep Shortcut</a> from Safari instead.</p>` : ''}
     </section>
     <div class="meter">
       <div class="meter-bar"><div class="meter-fill ${pct >= 99 ? 'full' : ''}" style="width:${pct}%"></div></div>
       <div class="meter-text"><span>${fmtBytes(used)} of ${fmtBytes(limitBytes())} used</span><span>${posts.length} saved</span></div>
     </div>
-    ${settings.subs.length ? `<div class="sync">
+    ${settings.subs.length && !settings.clientId ? `<div class="sync"><span>To grab top posts from ${settings.subs.map(s => 'r/' + esc(s)).join(', ')}: open the subreddit in Safari → Share → <b>Save to ThreadKeep</b>, then tap Paste here.<br><small><a href="#/settings">How to set it up</a></small></span></div>`
+    : settings.subs.length ? `<div class="sync">
       <span>Auto-download: ${settings.subs.map(s => 'r/' + esc(s)).join(', ')}<br><small>${ls ? 'Checked ' + fmtAgo(ls / 1000) + ' ago' : 'Not checked yet'}</small>
       ${syncErr ? `<br><small style="color:var(--bad)">Last check failed: ${esc(syncErr)}</small>` : ''}</span>
       <button class="btn" id="syncBtn">Check now</button></div>`
@@ -647,13 +689,14 @@ async function renderLibrary() {
     <div class="list">
       ${shown.map(itemHtml).join('') || (posts.length ? '<p class="empty">No matches.</p>' : `
         <div class="empty"><h2>Nothing saved yet</h2>
-        In the Reddit app tap <b>Share → Copy link</b>, then come back here and tap <b>Paste link &amp; save</b>.</div>`)}
+        Open a Reddit post in Safari → <b>Share</b> → <b>Save to ThreadKeep</b>, then come back and tap <b>Paste link &amp; save</b>.<br><a href="#/settings">Set up the Shortcut</a></div>`)}
     </div>`;
 
   $('#pasteBtn').onclick = async () => {
     try {
       const text = await navigator.clipboard.readText();
       if (!text) { toast('Clipboard is empty.'); return; }
+      if (text.trimStart().startsWith(BUNDLE_PREFIX)) { importBundle(text); return; }
       savePostFromInput(text);
     } catch { toast('Couldn’t read the clipboard — paste into the box instead.'); $('#urlInput').focus(); }
   };
@@ -795,6 +838,35 @@ async function renderSettings() {
   let persisted = false;
   try { persisted = await navigator.storage.persisted(); } catch {}
   view.innerHTML = `
+    <section class="group" id="shortcutHelp"><h3>Saving without a Reddit key</h3>
+      <div class="field">
+        <p style="margin:0 0 8px">Reddit blocks apps that aren’t signed in, so ThreadKeep uses a Shortcut that grabs threads from Safari while you’re signed in to Reddit there.</p>
+        <p style="margin:0 0 4px;font-weight:600">One-time setup</p>
+        <ol class="steps">
+          <li>Open the <b>Settings</b> app → <b>Apps</b> → <b>Shortcuts</b> → <b>Advanced</b> → turn on <b>Allow Running Scripts</b>.</li>
+          <li>Tap <a href="shortcut/Save%20to%20ThreadKeep.shortcut"><b>Get the “Save to ThreadKeep” Shortcut</b></a> → <b>Add Shortcut</b>.</li>
+          <li>In Safari, sign in at <b>reddit.com</b>.</li>
+        </ol>
+        <p style="margin:8px 0 4px;font-weight:600">Saving a post</p>
+        <ol class="steps">
+          <li>Open the post in <b>Safari</b> (in the Reddit app: Share → Copy link, then paste it into Safari).</li>
+          <li>Tap <b>Share</b> → <b>Save to ThreadKeep</b>. The first time, tap <b>Allow</b>.</li>
+          <li>Open ThreadKeep and tap <b>Paste link &amp; save</b>.</li>
+        </ol>
+        <p style="margin:8px 0 4px;font-weight:600">Grabbing a whole subreddit</p>
+        <p class="hint" style="margin:0">Open a subreddit like <b>reddit.com/r/AskReddit</b> in Safari and run the same Shortcut. It saves today’s top 10 posts with their comments in one go.</p>
+        <details style="margin-top:10px"><summary>The link doesn’t work? Build the Shortcut yourself</summary>
+          <ol class="steps">
+            <li>Open <b>Shortcuts</b> → <b>+</b>. Name it <b>Save to ThreadKeep</b>.</li>
+            <li>Tap the <b>ⓘ</b> → turn on <b>Show in Share Sheet</b> → set it to receive <b>Safari web pages</b> only.</li>
+            <li>Add <b>Run JavaScript on Web Page</b>. Delete its sample code, then paste the script (button below).</li>
+            <li>Add <b>Copy to Clipboard</b>, then <b>Show Notification</b>.</li>
+          </ol>
+          <button class="btn" id="copyScriptBtn" type="button">Copy the script</button>
+        </details>
+      </div>
+    </section>
+
     <section class="group"><h3>Offline storage</h3>
       <div class="field"><label>Storage limit</label>
         ${seg('limitMB', [[250, '250 MB'], [500, '500 MB'], [1000, '1 GB'], [2000, '2 GB'], [4000, '4 GB']], settings.limitMB)}
@@ -864,7 +936,7 @@ async function renderSettings() {
 
     <section class="group"><h3>Reddit access</h3>
       <div class="field"><label for="cid">Reddit client ID (optional)</label>
-        <p class="hint" style="margin:0 0 8px">Not needed if saving already works. Only add one if Reddit blocks downloads.</p>
+        <p class="hint" style="margin:0 0 8px">Optional. With an approved key, ThreadKeep can download by itself, including automatic downloads from your favourite subreddits, without the Shortcut.</p>
         <input type="text" id="cid" value="${esc(settings.clientId)}" placeholder="e.g. aB3xYz_12QwErT" autocomplete="off" autocapitalize="off" spellcheck="false">
         <details style="margin-top:10px"><summary>How to get one (2 minutes)</summary>
           <ol class="steps">
@@ -925,6 +997,13 @@ async function renderSettings() {
     const b = e.target.closest('[data-remove]'); if (!b) return;
     settings.subs = settings.subs.filter(s => s !== b.dataset.remove); saveSettings();
     renderSettings();
+  };
+  $('#copyScriptBtn').onclick = async () => {
+    try {
+      const js = await (await fetch('shortcut/save-to-threadkeep.js', { cache: 'no-store' })).text();
+      await navigator.clipboard.writeText(js);
+      toast('Script copied. Paste it into “Run JavaScript on Web Page”.');
+    } catch { toast('Couldn’t copy. Make sure you’re online.'); }
   };
   $('#ci').onchange =(e) => { settings.commentImages = e.target.checked; saveSettings(); };
   $('#cid').onchange = (e) => {

@@ -18,33 +18,40 @@ Save Reddit threads (post, comments and images) on your iPhone and read them off
 
 (Cloudflare Pages or Netlify work too. Any free static hosting with HTTPS will do.)
 
+## 2. Saving posts (no Reddit key needed)
+
+Reddit blocks apps that aren't signed in, so ThreadKeep uses a free Shortcut that grabs threads from Safari while you're signed in to Reddit there.
+
+**One-time setup**
+1. Open the **Settings** app → **Apps** → **Shortcuts** → **Advanced** → turn on **Allow Running Scripts**.
+2. On your iPhone, open [Save to ThreadKeep.shortcut](https://chirapat.github.io/threadkeep/shortcut/Save%20to%20ThreadKeep.shortcut) → **Add Shortcut**. (If Safari offers to download it, tap Download, then open it from Safari's downloads.)
+3. In Safari, sign in at **reddit.com**.
+
+**Saving a post**
+1. Open the post in **Safari**. From the Reddit app: Share → Copy link, then paste it into Safari.
+2. Tap **Share** → **Save to ThreadKeep**. The first time, tap **Allow**.
+3. Open ThreadKeep and tap **Paste link & save**.
+
+**Grabbing a subreddit:** open e.g. `reddit.com/r/AskReddit` in Safari and run the same Shortcut. It saves today's top 10 posts with their comments.
+
+If the Shortcut link doesn't import, build it yourself: **Shortcuts → +**, turn on **Show in Share Sheet** (Safari web pages), then add **Run JavaScript on Web Page** with the script from [`shortcut/save-to-threadkeep.js`](shortcut/save-to-threadkeep.js), **Copy to Clipboard**, and **Show Notification**.
+
+Other things to know:
+- **Update comments** on a saved post needs the Reddit key; without it, run the Shortcut on the post again.
+- **Keep forever** stops a post from ever being removed automatically.
+
 ## Reddit client ID (optional)
 
-Not needed if saving already works. Only add one if Reddit blocks downloads on your connection.
+With an approved key, ThreadKeep downloads by itself, including automatic downloads from your favourite subreddits, without the Shortcut.
 
 1. In Safari, sign in at https://www.reddit.com/prefs/apps
 2. Tap **create another app…**
 3. Name: `ThreadKeep`. Type: **installed app**.
-4. Redirect URI: your app's address, e.g. `https://YOUR-USERNAME.github.io/threadkeep/`
+4. Redirect URI: `https://chirapat.github.io/threadkeep/`
 5. Tap **create app**. Copy the short code shown under the app name.
 6. In ThreadKeep, open **Settings → Reddit client ID** and paste it. You'll see "Reddit connected ✓".
 
-Since late 2025, Reddit usually doesn't create the app instantly. It sends you to its Responsible Builder Policy and an access request form, which a person reviews. Describe it as a personal, non-commercial, read-only app that saves threads you choose to read offline on your own phone, at a low request rate. Approval can take a while and isn't guaranteed. Until then, ThreadKeep tries Reddit's public pages directly from your phone, which may or may not be allowed on your network.
-
-## Saving posts
-
-- In the Reddit app: **Share → Copy link**, then open ThreadKeep and tap **Paste link & save**.
-- The whole thread downloads right away. If you're offline, it queues and downloads as soon as you're back online with the app open.
-- **Update comments** on a saved post re-downloads it with the newest comments.
-- **Keep forever** stops a post from ever being removed automatically.
-
-### If a short "/s/" share link fails
-Make a Shortcut: **Shortcuts → +** and add these actions:
-1. **Receive URLs from Share Sheet**
-2. **Expand URL**
-3. **Copy to Clipboard**
-
-Name it "Expand link". In Reddit, share to **Expand link**, then paste in ThreadKeep.
+Since late 2025, Reddit usually doesn't create the app instantly. It sends you to an access request form, which a person reviews. Describe it as a personal, non-commercial, read-only app that saves threads you choose to read offline on your own phone. Approval can take a while and isn't guaranteed.
 
 ## Settings
 
@@ -55,7 +62,7 @@ Name it "Expand link". In Reddit, share to **Expand link**, then paste in Thread
 | Top comments | 25 / 50 / 100 / 200 / all (about 500 max) |
 | Reply depth | Top only, 2, 4, 6, 10 levels |
 | Images | Phone size (recommended), Original, None. Comment images on/off |
-| Favourite subreddits | Auto-download new posts from e.g. r/AskReddit: 3/5/10/25 posts each, Top today / Top this week / Hot, checked every hour / 6 h / daily / only when you tap |
+| Favourite subreddits | (Needs the Reddit key) Auto-download new posts from e.g. r/AskReddit: 3/5/10/25 posts each, Top today / Top this week / Hot, checked every hour / 6 h / daily / only when you tap |
 | NSFW | Show, Blur images (tap to reveal), or Hide (hidden from your list and never auto-downloaded). The **Show NSFW** switch on the home page turns NSFW posts on and off |
 
 Auto-downloaded posts are labelled **Auto** and are the first to be removed when storage is full. Posts you delete are remembered and won't be downloaded again. The home page has subreddit chips to filter your list.

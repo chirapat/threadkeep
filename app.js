@@ -4,6 +4,27 @@
 'use strict';
 
 const MEDIA_CACHE = 'tk-media-v1';
+const APP_VERSION = '1.3';
+
+// iPhone keeps Home Screen apps running in the background, so a new version may never load.
+// Check version.json whenever the app opens or comes back to the front, and reload once if it changed.
+async function checkForUpdate() {
+  if (!navigator.onLine) return;
+  try {
+    const res = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) return;
+    const { version } = await res.json();
+    if (version && version !== APP_VERSION) {
+      let tried = '';
+      try { tried = sessionStorage.getItem('tk-reloaded-for') || ''; } catch {}
+      if (tried === version) return; // already reloaded once for this version; don't loop
+      try { sessionStorage.setItem('tk-reloaded-for', version); } catch {}
+      const reg = await navigator.serviceWorker?.getRegistration();
+      if (reg) await reg.update().catch(() => {});
+      location.reload();
+    }
+  } catch {}
+}
 const MB = 1024 * 1024;
 
 /* ---------------- Settings ---------------- */
@@ -973,7 +994,7 @@ async function renderSettings() {
       </div>
       <div class="field"><button class="btn danger block" id="wipeBtn">Delete all saved posts</button></div>
     </section>
-    <p class="hint" style="text-align:center">ThreadKeep stores everything on this device. Nothing is sent anywhere except requests to Reddit.</p>`;
+    <p class="hint" style="text-align:center">ThreadKeep version ${APP_VERSION}. Stores everything on this device. Nothing is sent anywhere except requests to Reddit.</p>`;
 
   view.querySelectorAll('.seg').forEach(s => s.addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
@@ -1084,9 +1105,10 @@ function updateNet() {
 }
 window.addEventListener('online', updateNet);
 window.addEventListener('offline', updateNet);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { runQueue(); syncSubs(); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { checkForUpdate(); runQueue(); syncSubs(); } });
 
 (async function start() {
+  checkForUpdate();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch {}
   $('#netStatus').hidden = navigator.onLine;

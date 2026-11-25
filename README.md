@@ -1,8 +1,14 @@
 # ThreadKeep
 
-Save Reddit threads (post, comments and images) on your iPhone and read them offline. Free, with no server and no account other than Reddit's free developer key.
+Save Reddit threads (post, comments and images) on your iPhone and read them offline. Free, with no server and no account needed.
 
-## 1. Put it online for free (GitHub Pages, about 5 minutes)
+## 1. Install it on your iPhone
+
+1. Open Safari (it has to be Safari) and go to `https://chirapat.github.io/threadkeep/`
+2. Tap the Share button (the square with an arrow) → scroll down → Add to Home Screen → Add.
+3. From now on, always open ThreadKeep from the new icon on your Home Screen. Your saved posts live there, separate from Safari.
+
+## Hosting your own copy (GitHub Pages, about 5 minutes)
 
 1. Create a free account at github.com.
 2. Tap **+ → New repository**. Name it `threadkeep`, choose **Public**, and tap **Create repository**.
@@ -12,15 +18,9 @@ Save Reddit threads (post, comments and images) on your iPhone and read them off
 
 (Cloudflare Pages or Netlify work too. Any free static hosting with HTTPS will do.)
 
-## 2. Install it on your iPhone
+## Reddit client ID (optional)
 
-1. Open your app's address in **Safari**.
-2. Tap **Share → Add to Home Screen**.
-3. Always open ThreadKeep from that icon. Home Screen apps have their own storage, which iOS doesn't clear the way it clears Safari's.
-
-## 3. Get your free Reddit client ID
-
-Reddit blocks many anonymous requests, so the app uses your own free personal key.
+Not needed if saving already works. Only add one if Reddit blocks downloads on your connection.
 
 1. In Safari, sign in at https://www.reddit.com/prefs/apps
 2. Tap **create another app…**

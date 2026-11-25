@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const APP_VERSION = '2.2';
+const APP_VERSION = '2.3';
 const MEDIA_CACHE = 'tk-media-v1';
 const BUNDLE_PREFIX = 'THREADKEEP:';
 const SHORTCUT_URL = 'shortcut/Save%20to%20ThreadKeep.shortcut';
@@ -20,7 +20,9 @@ const DEFAULTS = {
   showNsfw: true,      // home page switch
   blurNsfw: true,      // blur NSFW images until tapped
   fontSize: 17,
+  clientId: '',        // free Reddit API key: lets the app download directly, no Shortcut
 };
+const grabPrefs = () => store.get('tk-grab', { top: 10, t: 'week', comments: 100 });
 const store = {
   get(key, fallback) { try { const v = localStorage.getItem(key); return v == null ? fallback : JSON.parse(v); } catch { return fallback; } },
   set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} },
@@ -384,6 +386,83 @@ async function redditApi(path, token) {
   return res.json();
 }
 
+/* ---- Direct download with your own free Reddit key (no Shortcut needed) ---- */
+
+function deviceId() {
+  let id = store.get('tk-device', '');
+  if (!id) { id = Array.from(crypto.getRandomValues(new Uint8Array(15)), b => b.toString(16).padStart(2, '0')).join(''); store.set('tk-device', id); }
+  return id;
+}
+
+// Signs in to Reddit with the key and returns a short-lived token (cached until it expires).
+async function appToken() {
+  if (!settings.clientId) return null;
+  try { const c = store.get('tk-apptoken', null); if (c && c.cid === settings.clientId && c.exp > Date.now() + 60000) return c.token; } catch {}
+  let res;
+  try {
+    res = await fetch('https://www.reddit.com/api/v1/access_token', {
+      method: 'POST',
+      headers: { Authorization: 'Basic ' + btoa(settings.clientId.trim() + ':') },
+      body: new URLSearchParams({ grant_type: 'https://oauth.reddit.com/grants/installed_client', device_id: deviceId() }),
+    });
+  } catch { throw new Error(navigator.onLine ? 'Couldn’t reach Reddit. Try again.' : 'You’re offline.'); }
+  if (res.status === 401) throw new Error('Reddit rejected the key. Check the client ID in Settings.');
+  if (!res.ok) throw new Error('Reddit sign-in failed (' + res.status + ').');
+  const data = await res.json();
+  if (!data.access_token) throw new Error('Reddit rejected the key: ' + (data.error || 'unknown error'));
+  store.set('tk-apptoken', { cid: settings.clientId, token: data.access_token, exp: Date.now() + data.expires_in * 1000 });
+  return data.access_token;
+}
+
+function parseLink(text) {
+  text = String(text || '').trim();
+  const m = text.match(/comments\/([a-z0-9]+)/i); if (m) return { type: 'post', id: m[1].toLowerCase() };
+  const s = text.match(/redd\.it\/([a-z0-9]+)/i); if (s) return { type: 'post', id: s[1].toLowerCase() };
+  const r = text.match(/(?:reddit\.com\/)?r\/([A-Za-z0-9_]{2,21})/i); if (r) return { type: 'sub', name: r[1] };
+  if (/^[A-Za-z0-9_]{2,21}$/.test(text)) return { type: 'sub', name: text };
+  return null;
+}
+const cleanSub = (s) => { const m = String(s || '').trim().replace(/^.*r\//i, '').match(/^[A-Za-z0-9_]{2,21}/); return m ? m[0] : ''; };
+
+async function savePostById(id, comments) {
+  comments = Math.min(500, Math.max(5, comments || grabPrefs().comments));
+  let token; try { token = await appToken(); } catch (e) { toast(e.message, 6000); return; }
+  if (!token) { toast('Add your Reddit key in Settings first.', 5000); return; }
+  progress('Downloading…', 0.3);
+  try {
+    const depth = comments <= 25 ? 3 : comments <= 100 ? 5 : 8;
+    const json = await redditApi('/comments/' + id + '?limit=' + comments + '&depth=' + depth + '&sort=top&raw_json=1', token);
+    progress('Saving…', 0.7);
+    const pid = await saveThread(json);
+    progress(null); location.hash = '#/p/' + pid; route();
+  } catch (e) { progress(null); toast(e.message, 6000); render(); }
+}
+
+async function grabSubreddit(sub, top, t, comments) {
+  top = Math.min(50, Math.max(1, top || 10));
+  comments = Math.min(500, Math.max(5, comments || 100));
+  t = RANGE_LABEL[t] ? t : 'week';
+  let token; try { token = await appToken(); } catch (e) { toast(e.message, 6000); return; }
+  if (!token) { toast('Add your Reddit key in Settings first.', 5000); return; }
+  const depth = comments <= 25 ? 3 : comments <= 100 ? 5 : 8;
+  let ids;
+  try {
+    progress('Finding the top ' + top + ' ' + RANGE_LABEL[t] + ' in r/' + sub + '…', 0.02);
+    const list = await redditApi('/r/' + sub + '/top?t=' + t + '&limit=' + Math.min(100, top + 5) + '&raw_json=1', token);
+    ids = (list?.data?.children || []).map(c => c.data).filter(d => d && !d.stickied && (settings.showNsfw || !d.over_18)).slice(0, top).map(d => d.id);
+  } catch (e) { progress(null); toast(e.message, 7000); return; }
+  if (!ids.length) { progress(null); toast('No posts found in r/' + sub + ' ' + RANGE_LABEL[t] + '.', 5000); return; }
+  let saved = 0, error = '';
+  for (let i = 0; i < ids.length; i++) {
+    progress('Saving ' + (i + 1) + ' of ' + ids.length + ' from r/' + sub + '…', i / ids.length);
+    try { await saveThread(await redditApi('/comments/' + ids[i] + '?limit=' + comments + '&depth=' + depth + '&sort=top&raw_json=1', token), { fromSubreddit: true }); saved++; }
+    catch (e) { error = e.message; if (/Storage is full|offline|rejected|Couldn’t reach/.test(error)) break; }
+  }
+  progress(null);
+  toast(saved === ids.length ? 'Saved the top ' + saved + ' ' + RANGE_LABEL[t] + ' from r/' + sub + '.' : 'Saved ' + saved + ' of ' + ids.length + '. ' + error, 7000);
+  render();
+}
+
 async function importFromReddit(b) {
   const pick = b.pick || {};
   const comments = Math.min(500, Math.max(5, pick.comments || 50));
@@ -491,6 +570,27 @@ function setupStepsHtml() {
   </ol>`;
 }
 
+function keyPanelHtml() {
+  const g = grabPrefs();
+  const opt = (v, cur, label) => `<option value="${v}" ${String(v) === String(cur) ? 'selected' : ''}>${label || v}</option>`;
+  return `<section class="card keypanel">
+    <form id="linkForm" class="linkrow">
+      <input id="linkInput" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste a reddit.com post link">
+      <button class="btn" type="submit">Save</button>
+    </form>
+    <div class="or"><span>or grab a subreddit’s top posts</span></div>
+    <form id="grabForm" class="grab">
+      <input id="grabSub" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="subreddit, e.g. AskReddit">
+      <div class="grabrow">
+        <label>Top <select id="grabTop" aria-label="How many posts">${[5,10,25,50].map(v => opt(v, g.top)).join('')}</select></label>
+        <label>from <select id="grabRange" aria-label="Time range">${[['day','today'],['week','this week'],['month','this month'],['year','this year'],['all','all time']].map(([v,l]) => opt(v, g.t, l)).join('')}</select></label>
+        <label><select id="grabComments" aria-label="Comments per thread">${[25,50,100,200].map(v => opt(v, g.comments, v + ' comments')).join('')}</select></label>
+      </div>
+      <button class="btn primary block" type="submit">Grab</button>
+    </form>
+  </section>`;
+}
+
 function howToHtml() {
   return `<div class="howto">
     <div><span class="num">1</span><p>In <b>Safari</b>, open a Reddit post or a subreddit like <b>r/AskReddit</b>.</p></div>
@@ -516,20 +616,23 @@ async function renderHome() {
 
   view.innerHTML = `
     ${installCardHtml()}
-    ${!setupDone ? `<section class="card setup">
-        <h2>Set up in 3 steps</h2>
-        <p class="muted">Reddit only lets you download while you’re signed in, so a free Shortcut grabs threads from Safari for you.</p>
-        ${setupStepsHtml()}
-        <button class="btn small" id="setupDone">I’ve done this</button>
-      </section>` : ''}
+    ${settings.clientId ? keyPanelHtml() : `
+      ${!setupDone ? `<section class="card setup">
+          <h2>Best way: add a free Reddit key</h2>
+          <p class="muted">With a key, ThreadKeep downloads any post or a subreddit’s top posts directly, with all their comments. <a href="#/settings">Set it up →</a></p>
+          <p class="muted small">No key yet? You can still save the post you’re reading with the Shortcut:</p>
+          ${setupStepsHtml()}
+          <button class="btn small" id="setupDone">Hide this</button>
+        </section>` : ''}
+      <button class="paste-btn" id="pasteBtn">${ICONS.paste}<span>Paste from Shortcut</span></button>
+      <div id="pasteBox" class="card" hidden>
+        <p class="muted" style="margin:0 0 8px">Touch and hold the box, then tap <b>Paste</b>.</p>
+        <textarea rows="2" aria-label="Paste the copied thread here"></textarea>
+      </div>`}
 
-    <button class="paste-btn" id="pasteBtn">${ICONS.paste}<span>Paste from Shortcut</span></button>
-    <div id="pasteBox" class="card" hidden>
-      <p class="muted" style="margin:0 0 8px">Touch and hold the box, then tap <b>Paste</b>.</p>
-      <textarea rows="2" aria-label="Paste the copied thread here"></textarea>
-    </div>
-
-    ${!posts.length ? `<section class="empty">${howToHtml()}</section>` : `
+    ${!posts.length ? `<section class="empty">${settings.clientId
+        ? '<p class="muted center">Paste a post link, or grab a subreddit’s top posts above, to start saving.</p>'
+        : howToHtml()}</section>` : `
       <div class="toolbar">
         <div class="gauge">
           <div class="gauge-bar"><div class="gauge-fill ${pct >= 95 ? 'full' : ''}" style="width:${pct}%"></div></div>
@@ -546,7 +649,24 @@ async function renderHome() {
       <div class="list">${shown.map(itemHtml).join('') || '<p class="empty muted">Nothing matches.</p>'}</div>
     `}`;
 
-  $('#pasteBtn').onclick = pasteFromShortcut;
+  const pb = $('#pasteBtn'); if (pb) pb.onclick = pasteFromShortcut;
+  const lf = $('#linkForm');
+  if (lf) lf.onsubmit = (e) => {
+    e.preventDefault();
+    const inp = $('#linkInput'), p = parseLink(inp.value);
+    if (!p) { toast('Paste a reddit.com post link, or a subreddit name.'); return; }
+    if (p.type === 'post') { inp.value = ''; savePostById(p.id); }
+    else { $('#grabSub').value = p.name; inp.value = ''; toast('That’s r/' + p.name + ' — set the options below and tap Grab.', 4000); }
+  };
+  const gf = $('#grabForm');
+  if (gf) gf.onsubmit = (e) => {
+    e.preventDefault();
+    const name = cleanSub($('#grabSub').value);
+    if (!name) { toast('Type a subreddit name, e.g. AskReddit.'); return; }
+    const pr = { top: +$('#grabTop').value, t: $('#grabRange').value, comments: +$('#grabComments').value };
+    store.set('tk-grab', pr);
+    grabSubreddit(name, pr.top, pr.t, pr.comments);
+  };
   const sd = $('#setupDone'); if (sd) sd.onclick = () => { store.set('tk-setup-done', true); renderHome(); };
   const ic = $('#installClose'); if (ic) ic.onclick = () => { try { sessionStorage.setItem('tk-install-hidden', '1'); } catch {} renderHome(); };
   const nt = $('#nsfwToggle'); if (nt) nt.onchange = () => { settings.showNsfw = nt.checked; saveSettings(); renderHome(); };
@@ -637,6 +757,23 @@ async function renderSettings() {
   let persisted = false;
   try { persisted = await navigator.storage.persisted(); } catch {}
   view.innerHTML = `
+    <section class="group"><h3>Reddit key — the reliable way</h3>
+      <div class="field">
+        <p style="margin:0 0 8px">With a free key, ThreadKeep downloads any post or a subreddit’s top posts directly — all comments, no Shortcut. ${settings.clientId ? '<b style="color:var(--ok)">Key added ✓</b>' : ''}</p>
+        <input type="text" id="cid" value="${esc(settings.clientId)}" placeholder="Paste your client ID" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <details ${settings.clientId ? '' : 'open'}><summary>How to get one (a few minutes)</summary>
+          <ol class="steps">
+            <li>On your iPhone, sign in at <a href="https://www.reddit.com/prefs/apps" target="_blank" rel="noopener">reddit.com/prefs/apps</a>.</li>
+            <li>Tap <b>create another app…</b> (or <b>create an app</b>).</li>
+            <li>Name <b>ThreadKeep</b>, choose <b>installed app</b>.</li>
+            <li>Redirect URI: <code>${esc(location.origin + location.pathname)}</code></li>
+            <li>Tap <b>create app</b>, then copy the short code under the app’s name and paste it above.</li>
+          </ol>
+          <p class="muted small"><b>Says “Max clients have been reached”?</b> Your Reddit account already has the most apps it allows. On that same page, tap <b>delete</b> (or <b>revoke</b>) on an app you don’t use to free a slot, then create ThreadKeep.</p>
+        </details>
+      </div>
+    </section>
+
     <section class="group"><h3>Storage</h3>
       <div class="field"><label>Space for saved threads</label>
         ${seg('limitMB', [[250, '250 MB'], [500, '500 MB'], [1000, '1 GB'], [2000, '2 GB']], settings.limitMB)}
@@ -656,13 +793,13 @@ async function renderSettings() {
         <input type="checkbox" role="switch" class="toggle" id="blurNsfw" ${settings.blurNsfw ? 'checked' : ''}></div>
     </section>
 
-    <section class="group"><h3>The Shortcut</h3>
+    <section class="group"><h3>No key? Use the Shortcut (fallback)</h3>
       <div class="field">
+        <p class="muted small" style="margin:0 0 10px">Only needed without a key. It saves the single post you have open in Safari, with the comments loaded on screen. Scroll down first to load more.</p>
         <p class="label">Setup</p>
         ${setupStepsHtml()}
         <p class="label">Saving</p>
         ${howToHtml()}
-        <p class="muted small">ThreadKeep downloads using your Safari sign-in, so even top 25 with 200 comments saves in one run.</p>
         <details><summary>The Shortcut link doesn’t work?</summary>
           <ol class="steps">
             <li>Open <b>Shortcuts</b> → <b>+</b>, name it <b>Save to ThreadKeep</b>.</li>
@@ -689,6 +826,13 @@ async function renderSettings() {
     if (key === 'limitMB') makeRoom(0).then(() => toast('Storage limit: ' + fmtBytes(limitBytes())));
   }));
   $('#blurNsfw').onchange = (e) => { settings.blurNsfw = e.target.checked; saveSettings(); };
+  $('#cid').onchange = async (e) => {
+    settings.clientId = e.target.value.trim(); saveSettings();
+    store.set('tk-apptoken', null);
+    if (!settings.clientId) { toast('Key removed.'); return; }
+    try { await appToken(); toast('Reddit key works ✓ — you can download directly now.', 5000); renderSettings(); }
+    catch (err) { toast(err.message, 6000); }
+  };
   $('#copyScript').onclick = async () => {
     try {
       const js = await (await fetch('shortcut/save-to-threadkeep.js', { cache: 'no-store' })).text();
@@ -749,7 +893,7 @@ async function cleanUpOldVersion() {
     if (!(await db.get('threads', p.id))) { await db.del('posts', p.id); continue; }
     if (p.complete === undefined) { p.complete = true; delete p.status; delete p.error; await db.put('posts', p); }
   }
-  for (const k of ['tk-token', 'tk-device', 'tk-seen', 'tk-lastsync', 'tk-syncerr', 'tk-nsfw-on']) { try { localStorage.removeItem(k); } catch {} }
+  for (const k of ['tk-token', 'tk-seen', 'tk-lastsync', 'tk-syncerr', 'tk-nsfw-on']) { try { localStorage.removeItem(k); } catch {} }
   saveSettings();
 }
 

@@ -32,7 +32,7 @@ Reddit blocks apps that aren't signed in, so ThreadKeep uses a free Shortcut tha
 2. Tap **Share** → **Save to ThreadKeep**. The first time, tap **Allow**.
 3. Open ThreadKeep and tap **Paste link & save**.
 
-**Grabbing a subreddit:** open e.g. `reddit.com/r/AskReddit` in Safari and run the same Shortcut. It saves today's top 10 posts with their comments.
+**Grabbing a subreddit:** open e.g. `reddit.com/r/AskReddit` in Safari and run the same Shortcut. It saves today's top 10 posts with their comments. If it says some are missing, run it once more for the rest.
 
 If the Shortcut link doesn't import, build it yourself: **Shortcuts → +**, turn on **Show in Share Sheet** (Safari web pages), then add **Run JavaScript on Web Page** with the script from [`shortcut/save-to-threadkeep.js`](shortcut/save-to-threadkeep.js), **Copy to Clipboard**, and **Show Notification**.
 

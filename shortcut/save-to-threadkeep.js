@@ -40,21 +40,35 @@
     }
 
     if (sub) {
-      const COUNT = 6;
-      const threads = [];
-      setTimeout(() => {
+      // Today's top 10. Whatever doesn't finish in time is fetched on the next run:
+      // posts already sent today are remembered (on this reddit.com page's storage) and skipped.
+      const COUNT = 10;
+      const key = 'threadkeep-sent-' + sub[1].toLowerCase() + '-' + new Date().toISOString().slice(0, 10);
+      let sent = [];
+      try { sent = JSON.parse(localStorage.getItem(key) || '[]'); } catch (e) {}
+      const threads = [], gotIds = [];
+      let wanted = 0;
+      const finish = () => {
         if (ctrl) ctrl.abort();
-        send(threads.length ? { tk: 1, source: 'subreddit', sub: sub[1], threads }
-          : { error: 'Reddit was too slow. Try again, or save posts one at a time.' });
-      }, DEADLINE_MS);
+        try { localStorage.setItem(key, JSON.stringify(sent.concat(gotIds))); } catch (e) {}
+        if (!threads.length && !wanted) return send({ error: 'Reddit was too slow. Try again in a moment.' });
+        send({ tk: 1, source: 'subreddit', sub: sub[1], threads, wanted, have: Math.min(wanted, sent.length + gotIds.length) });
+      };
+      setTimeout(finish, DEADLINE_MS);
       get('/r/' + sub[1] + '/top.json?t=day&limit=' + (COUNT + 4) + '&raw_json=1')
         .then(list => {
           const ids = list.data.children.map(c => c.data).filter(d => !d.stickied).slice(0, COUNT).map(d => d.id);
-          return Promise.all(ids.map(id =>
-            get('/comments/' + id + '.json?limit=40&depth=3&sort=top&raw_json=1').then(t => { threads.push(t); }).catch(() => {})
+          wanted = ids.length;
+          sent = sent.filter(id => ids.includes(id));
+          let todo = ids.filter(id => !sent.includes(id));
+          if (!todo.length) { sent = []; todo = ids; } // already had them all: start over (e.g. to refresh comments)
+          return Promise.all(todo.map(id =>
+            get('/comments/' + id + '.json?limit=50&depth=4&sort=top&raw_json=1')
+              .then(t => { if (!done) { threads.push(t); gotIds.push(id); } })
+              .catch(() => {})
           ));
         })
-        .then(() => send({ tk: 1, source: 'subreddit', sub: sub[1], threads }))
+        .then(finish)
         .catch(err => send({ error: String((err && err.message) || err) }));
       return;
     }

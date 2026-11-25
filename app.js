@@ -4,7 +4,7 @@
 'use strict';
 
 const MEDIA_CACHE = 'tk-media-v1';
-const APP_VERSION = '1.3';
+const APP_VERSION = '1.4';
 
 // iPhone keeps Home Screen apps running in the background, so a new version may never load.
 // Check version.json whenever the app opens or comes back to the front, and reload once if it changed.
@@ -600,7 +600,7 @@ async function importBundle(text) {
   catch { toast('That copied data is incomplete. Run the Shortcut again.', 5000); return; }
   if (bundle.error) { toast('Shortcut: ' + bundle.error, 6000); return; }
   const threads = (bundle.threads || []).filter(t => t?.[0]?.data?.children?.[0]?.data?.id);
-  if (!threads.length) { toast('Nothing to save. Open a Reddit post or subreddit in Safari, then run the Shortcut.', 5000); return; }
+  if (!threads.length) { toast(bundle.source === 'subreddit' ? 'Reddit was slow. Run the Shortcut on r/' + bundle.sub + ' again.' : 'Nothing to save. Open a Reddit post or subreddit in Safari, then run the Shortcut.', 5000); return; }
   toast('Saving ' + threads.length + ' thread' + (threads.length > 1 ? 's' : '') + '…');
   let saved = 0, lastId = null;
   for (const json of threads) {
@@ -622,6 +622,10 @@ async function importBundle(text) {
   }
   addSeen(threads.map(t => t[0].data.children[0].data.id));
   if (saved === 1 && threads.length === 1) location.hash = '#/p/' + lastId;
+  else if (bundle.source === 'subreddit' && bundle.wanted && bundle.have < bundle.wanted)
+    toast('Saved ' + saved + '. You now have ' + bundle.have + ' of today’s top ' + bundle.wanted + ' from r/' + bundle.sub + '. Run the Shortcut again for the rest.', 7000);
+  else if (bundle.source === 'subreddit' && bundle.wanted)
+    toast('Done: all of today’s top ' + bundle.wanted + ' from r/' + bundle.sub + ' are saved.', 5000);
   else if (saved) toast('Saved ' + saved + ' thread' + (saved > 1 ? 's' : '') + ' for offline reading.');
   render();
 }
@@ -875,7 +879,7 @@ async function renderSettings() {
           <li>Open ThreadKeep and tap <b>Paste link &amp; save</b>.</li>
         </ol>
         <p style="margin:8px 0 4px;font-weight:600">Grabbing a whole subreddit</p>
-        <p class="hint" style="margin:0">Open a subreddit like <b>reddit.com/r/AskReddit</b> in Safari and run the same Shortcut. It saves today’s top 10 posts with their comments in one go.</p>
+        <p class="hint" style="margin:0">Open a subreddit like <b>reddit.com/r/AskReddit</b> in Safari and run the same Shortcut. It saves today’s top 10 posts with their comments. If it says some are missing, run it once more and it fetches the rest.</p>
         <details style="margin-top:10px"><summary>The link doesn’t work? Build the Shortcut yourself</summary>
           <ol class="steps">
             <li>Open <b>Shortcuts</b> → <b>+</b>. Name it <b>Save to ThreadKeep</b>.</li>

@@ -8,7 +8,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.5';
+const APP_VERSION = '4.6';
 const MEDIA_CACHE = 'tk-media-v1';
 const API = 'https://arctic-shift.photon-reddit.com/api';
 const MB = 1024 * 1024;
@@ -564,10 +564,11 @@ function itemHtml(p) {
       <div class="item-meta">${plural(p.savedComments || 0, 'comment')} · ${fmtBytes(p.bytes)}${p.textOnly ? ' · text only' : ''}${p.complete === false ? ' · saving…' : ''}</div>
     </div>
     ${p.thumb ? `<img class="thumb ${blur ? 'blurred' : ''}" src="${esc(p.thumb)}" alt="" loading="lazy" onerror="this.remove()">` : ''}
-  </a><div class="swipe-actions"><button class="sw-keep" data-id="${esc(p.id)}">${p.pinned ? 'Unkeep' : 'Keep'}</button><button class="sw-del" data-id="${esc(p.id)}">Delete</button></div></div>`;
+  </a><div class="swipe-actions"><button class="sw-read" data-id="${esc(p.id)}">${isRead(p.id) ? 'Unread' : 'Read'}</button><button class="sw-keep" data-id="${esc(p.id)}">${p.pinned ? 'Unkeep' : 'Keep'}</button><button class="sw-del" data-id="${esc(p.id)}">Delete</button></div></div>`;
 }
 
 // Swipe an item left to reveal Keep / Delete.
+const SWIPE_W = 204; // width of the three revealed actions (Read/Unread, Keep, Delete)
 function wireSwipe(listEl) {
   if (!listEl) return;
   let active = null, startX = 0, startY = 0, dx = 0, dragging = false;
@@ -581,16 +582,17 @@ function wireSwipe(listEl) {
   listEl.addEventListener('touchmove', (e) => {
     if (!active) return; dx = e.touches[0].clientX - startX; const dy = e.touches[0].clientY - startY;
     if (!dragging && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) dragging = true;
-    if (dragging) { const x = Math.max(-140, Math.min(0, dx + (active.classList.contains('swiped') ? -140 : 0))); active.style.transform = 'translateX(' + x + 'px)'; }
+    if (dragging) { const x = Math.max(-SWIPE_W, Math.min(0, dx + (active.classList.contains('swiped') ? -SWIPE_W : 0))); active.style.transform = 'translateX(' + x + 'px)'; }
   }, { passive: true });
   listEl.addEventListener('touchend', () => {
     if (!active) return; const was = active.classList.contains('swiped');
-    if (dragging) { const open = was ? dx < 60 : dx < -60; active.classList.toggle('swiped', open); active.style.transform = open ? 'translateX(-140px)' : ''; }
+    if (dragging) { const open = was ? dx < 80 : dx < -80; active.classList.toggle('swiped', open); active.style.transform = open ? 'translateX(-' + SWIPE_W + 'px)' : ''; }
     active = null;
   });
   listEl.addEventListener('click', async (e) => {
-    const keep = e.target.closest('.sw-keep'), del = e.target.closest('.sw-del');
-    if (keep) { const row = await db.get('posts', keep.dataset.id); if (row) { row.pinned = !row.pinned; await db.put('posts', row); } renderHome(); }
+    const read = e.target.closest('.sw-read'), keep = e.target.closest('.sw-keep'), del = e.target.closest('.sw-del');
+    if (read) { isRead(read.dataset.id) ? markUnread(read.dataset.id) : markRead(read.dataset.id); renderHome(); }
+    else if (keep) { const row = await db.get('posts', keep.dataset.id); if (row) { row.pinned = !row.pinned; await db.put('posts', row); } renderHome(); }
     else if (del) { if (confirm('Delete this thread?')) { await deletePost(del.dataset.id); _textCache.delete(del.dataset.id); } renderHome(); }
     else if (e.target.closest('.item.swiped')) { e.preventDefault(); closeAll(); }
   });

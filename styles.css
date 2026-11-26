@@ -178,7 +178,8 @@ p.empty { text-align: center; padding: 32px 0; }
 .item-wrap { position: relative; border-top: 1px solid var(--line); overflow: hidden; }
 .item-wrap:first-child { border-top: 0; }
 .swipe-actions { position: absolute; inset: 0 0 0 auto; display: flex; z-index: 0; }
-.swipe-actions button { border: 0; width: 70px; font-weight: 700; font-size: 13px; color: #fff; cursor: pointer; }
+.swipe-actions button { border: 0; width: 68px; font-weight: 700; font-size: 13px; color: #fff; cursor: pointer; }
+.swipe-actions .sw-read { background: var(--t1); }
 .swipe-actions .sw-keep { background: var(--accent); }
 .swipe-actions .sw-del { background: var(--bad); }
 .item {

@@ -56,10 +56,13 @@ code { font-size: 13px; background: var(--sunk); padding: 1px 5px; border-radius
   -webkit-backdrop-filter: saturate(180%) blur(16px); backdrop-filter: saturate(180%) blur(16px);
 }
 .topbar h1 { flex: 1; margin: 0 8px; font-size: 20px; font-weight: 750; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.topbar h1 .by { font-weight: 500; font-size: 13px; color: var(--muted); letter-spacing: 0; }
 .icon-btn { display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 12px; background: none; cursor: pointer; }
 .icon-btn:active { background: var(--sunk); }
 
 main { max-width: 680px; margin: 0 auto; padding: 8px 16px 48px; }
+
+.credit { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); opacity: .7; margin: 22px 0 6px; }
 
 /* ---------- Buttons & controls ---------- */
 .btn {

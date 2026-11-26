@@ -8,7 +8,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.0';
+const APP_VERSION = '4.2';
 const MEDIA_CACHE = 'tk-media-v1';
 const API = 'https://arctic-shift.photon-reddit.com/api';
 const MB = 1024 * 1024;
@@ -370,10 +370,17 @@ function sourcesFor(lib) {
   return [...mine, ...extra];
 }
 
+const UNREAD_ENOUGH = 20; // don't auto-download more while this many unread threads are waiting
 async function checkSubs(force, lib = currentLib()) {
   const sources = sourcesFor(lib);
   if (syncing || !navigator.onLine || !sources.length) return;
-  if (!force) { if (settings.autoCheck === 'off') return; if (settings.autoCheck === 'daily' && Date.now() - lastSync(lib) < 86400000) return; }
+  if (!force) {
+    if (settings.autoCheck === 'off') return;
+    if (settings.autoCheck === 'daily' && Date.now() - lastSync(lib) < 86400000) return;
+    // Don't pile up: skip the automatic check while there's still plenty unread in this library.
+    const unread = (await db.all('posts')).filter(p => (p.lib || 'main') === lib && !isRead(p.id)).length;
+    if (unread >= UNREAD_ENOUGH) return;
+  }
   syncing = true;
   let total = 0, failed = '', budgetFull = false;
   const nsfwLib = lib === 'nsfw';
@@ -390,8 +397,9 @@ async function checkSubs(force, lib = currentLib()) {
         catch (e2) { failed = 'r/' + sub + ': ' + e2.message; continue; }
       }
       const existing = new Set((await db.all('posts')).map(p => p.id));
-      // Main library never saves NSFW; the Private library saves whatever its subs return.
-      posts = posts.filter(p => p && !p.stickied && (p.num_comments || 0) > 3 && !seen.has(p.id) && !existing.has(p.id) && (nsfwLib || !p.over_18)
+      // Main library wants discussion threads (>3 comments) and never saves NSFW.
+      // The Private library saves whatever its subs return (image subs often have few comments).
+      posts = posts.filter(p => p && !p.stickied && (nsfwLib || (p.num_comments || 0) > 3) && !seen.has(p.id) && !existing.has(p.id) && (nsfwLib || !p.over_18)
         && (!settings.onlyKeywords.trim() || matchesAny(p.title || '', settings.onlyKeywords))
         && !(settings.muteKeywords.trim() && matchesAny(p.title || '', settings.muteKeywords)));
       posts.sort((a, b) => (b.num_comments || 0) - (a.num_comments || 0));
@@ -439,14 +447,16 @@ async function threadText(id) {
   if (t) { s = t.post.title + ' ' + (t.post.html || '') + ' '; const w = (l) => l.forEach(c => { s += (c.a || '') + ' ' + (c.h || '') + ' '; w(c.r); }); w(t.comments); }
   s = s.replace(/<[^>]+>/g, ' ').toLowerCase(); _textCache.set(id, s); return s;
 }
-// Switch libraries, asking for the passcode when entering a locked Private library.
+// Switch libraries. Asks for the passcode every time you enter the Private library; re-locks on leaving.
 async function switchLib(target) {
-  if (target === 'nsfw' && settings.pin && !unlocked()) {
+  if (target === currentLib()) return;
+  if (target === 'nsfw' && settings.pin) {
     const entry = prompt('Enter your Private passcode:');
     if (entry == null) return;
     if (entry !== settings.pin) { toast('Wrong passcode.'); return; }
     setUnlocked(true);
   }
+  if (target === 'main') setUnlocked(false);
   setLib(target); filterSub = ''; search = ''; unreadOnly = false; renderHome();
 }
 const ICONS = {
@@ -471,6 +481,7 @@ async function renderHome() {
   const lib = currentLib();
   if (lib === 'nsfw' && settings.hidePrivate && !unlocked()) { setLib('main'); return renderHome(); }
   setHeader(lib === 'nsfw' ? '🔒 Private' : 'ThreadKeep', false);
+  if (lib !== 'nsfw') $('#title').innerHTML = 'ThreadKeep <span class="by">by Chisun</span>';
   const all = await db.all('posts');
   const posts = all.filter(p => (p.lib || 'main') === lib).sort((a, b) => b.savedAt - a.savedAt);
   const used = all.reduce((n, p) => n + (p.bytes || 0), 0);
@@ -519,13 +530,14 @@ async function renderHome() {
       </div>
       ${posts.length > 6 ? `<input type="search" id="search" class="search" placeholder="Search titles & comments" value="${esc(search)}">` : ''}
       <div class="list" id="list">${shown.map(itemHtml).join('') || '<p class="empty muted">Nothing matches.</p>'}</div>`
-      : `<p class="empty muted">No saved threads in ${lib === 'nsfw' ? 'your Private library' : 'this library'} yet.${hasSources ? ' Tap <b>Check now</b> above.' : lib === 'nsfw' ? ' Add subreddits in Private settings.' : ''}</p>`}`;
+      : `<p class="empty muted">No saved threads in ${lib === 'nsfw' ? 'your Private library' : 'this library'} yet.${hasSources ? ' Tap <b>Check now</b> above.' : lib === 'nsfw' ? ' Add subreddits in Private settings.' : ''}</p>`}
+    <p class="credit center">Designed by Chisunsoft</p>`;
 
   $('#libswitch').onclick = (e) => { const b = e.target.closest('button'); if (b) switchLib(b.dataset.lib); };
   const cb = $('#checkBtn'); if (cb) cb.onclick = () => checkSubs(true, lib);
   $('#linkForm').onsubmit = (e) => {
     e.preventDefault(); const v = $('#linkInput').value.trim(); $('#linkInput').value = '';
-    if (settings.pin && v === settings.pin) { setUnlocked(true); switchLib('nsfw'); return; } // passcode unlock
+    if (settings.pin && v === settings.pin) { setUnlocked(true); setLib('nsfw'); filterSub = ''; search = ''; unreadOnly = false; renderHome(); return; } // passcode unlock (no second prompt)
     savePostFromLink(v);
   };
   const ic = $('#installClose'); if (ic) ic.onclick = () => { try { sessionStorage.setItem('tk-install-hidden', '1'); } catch {} renderHome(); };
@@ -698,7 +710,7 @@ async function renderSettings() {
     </section>
 
     <section class="group"><h3>Storage (shared)</h3>
-      <div class="field"><label>Total storage</label>${seg('limitMB', [[50, '50 MB'], [250, '250 MB'], [500, '500 MB'], [1000, '1 GB'], [2000, '2 GB']], settings.limitMB)}
+      <div class="field"><label>Total storage</label>${seg('limitMB', [[10, '10 MB'], [25, '25 MB'], [50, '50 MB'], [250, '250 MB'], [500, '500 MB'], [1000, '1 GB'], [2000, '2 GB']], settings.limitMB)}
         <p class="muted small">Using ${fmtBytes(used)} across both libraries.${persisted ? '' : ' Open from your Home Screen so iPhone keeps your threads.'}</p></div>
       <div class="field"><label>When storage is full</label>${seg('whenFull', [['evict', 'Remove oldest'], ['stop', 'Stop saving']], settings.whenFull)}
         <p class="muted small">Auto-saved threads go first; ones you <b>Keep</b> are never removed.</p></div>
@@ -725,7 +737,7 @@ async function renderSettings() {
     </section>
 
     <section class="group"><h3>Delete</h3><div class="field"><button class="btn danger block" id="wipe">Delete all saved threads</button></div></section>
-    <p class="muted small center">ThreadKeep ${APP_VERSION} · Threads come from the free Arctic Shift Reddit archive. Everything stays on this device.</p>`;
+    <p class="muted small center" style="line-height:1.7">ThreadKeep ${APP_VERSION} · Threads come from the free Arctic Shift Reddit archive. Everything stays on this device.<br><span class="credit">Designed by Chisunsoft</span></p>`;
 
   view.querySelectorAll('.seg').forEach(s => s.addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return; const key = s.dataset.setting;

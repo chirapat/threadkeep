@@ -8,7 +8,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.4';
+const APP_VERSION = '4.5';
 const MEDIA_CACHE = 'tk-media-v1';
 const API = 'https://arctic-shift.photon-reddit.com/api';
 const MB = 1024 * 1024;

@@ -54,3 +54,7 @@ You can set a **passcode** on the Private library, and optionally **hide its tab
 ## Hosting your own copy
 
 Upload these files to any free static host with HTTPS (GitHub Pages, Cloudflare Pages, Netlify). No server code needed.
+
+## Privacy
+
+Your saved threads, reading history, passcode and settings stay on your device and are never uploaded. The app fetches threads from the public Arctic Shift archive, and records an anonymous page-visit count via GoatCounter (no cookies, no accounts, no personal data). To remove even that, delete the GoatCounter `<script>` tag from `index.html`.

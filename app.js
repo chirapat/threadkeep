@@ -8,7 +8,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.6';
+const APP_VERSION = '4.7';
 const MEDIA_CACHE = 'tk-media-v1';
 const API = 'https://arctic-shift.photon-reddit.com/api';
 const MB = 1024 * 1024;
@@ -747,7 +747,7 @@ async function renderSettings() {
     </section>
 
     <section class="group"><h3>Delete</h3><div class="field"><button class="btn danger block" id="wipe">Delete all saved threads</button></div></section>
-    <p class="muted small center" style="line-height:1.7">ThreadKeep ${APP_VERSION} · Threads come from the free Arctic Shift Reddit archive. Everything stays on this device.<br><span class="credit">Designed by Chisunsoft</span></p>`;
+    <p class="muted small center" style="line-height:1.7">ThreadKeep ${APP_VERSION} · Threads come from the free Arctic Shift Reddit archive. Your saved threads stay on this device; only an anonymous visit count (no cookies, no accounts) is recorded.<br><span class="credit">Designed by Chisunsoft</span></p>`;
 
   view.querySelectorAll('.seg').forEach(s => s.addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return; const key = s.dataset.setting;

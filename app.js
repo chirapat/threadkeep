@@ -8,7 +8,7 @@
  */
 'use strict';
 
-const APP_VERSION = '3.3';
+const APP_VERSION = '4.0';
 const MEDIA_CACHE = 'tk-media-v1';
 const API = 'https://arctic-shift.photon-reddit.com/api';
 const MB = 1024 * 1024;
@@ -27,11 +27,18 @@ const DEFAULTS = {
   autoCheck: 'open',        // 'off' | 'open' (on launch) | 'daily'
   limitMB: 500,             // storage budget
   whenFull: 'evict',        // 'evict' = remove oldest (not kept), 'stop' = stop downloading
-  showNsfw: true,           // home switch: show NSFW in the library
-  autoNsfw: false,          // include NSFW threads in auto-download
-  blurNsfw: true,           // blur NSFW images until tapped
+  showNsfw: true,           // (legacy)
+  autoNsfw: false,          // (legacy)
+  blurNsfw: true,           // blur private images until tapped
   fontSize: 17,
+  onlyKeywords: '',         // only auto-save threads whose title matches any (comma-separated)
+  muteKeywords: '',         // skip threads whose title matches any
+  pin: '',                  // passcode for the Private library ('' = none)
+  hidePrivate: false,       // hide the Private tab until unlocked by passcode
+  theme: 'auto',            // 'auto' | 'light' | 'dark'
+  accent: 'orange',         // accent colour key
 };
+const ACCENTS = { orange: '#e8562a', blue: '#2f6fed', green: '#2f9e44', purple: '#8b4fd6', pink: '#d6336c', slate: '#475569' };
 const store = {
   get(k, f) { try { const v = localStorage.getItem(k); return v == null ? f : JSON.parse(v); } catch { return f; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
@@ -46,9 +53,34 @@ const settings = (() => {
   if (saved.nsfw === 'hide') s.showNsfw = false;
   return s;
 })();
-function saveSettings() { store.set('tk-settings', settings); applyFontSize(); }
+function saveSettings() { store.set('tk-settings', settings); applyFontSize(); applyTheme(); }
 function applyFontSize() { document.documentElement.style.setProperty('--reader-size', settings.fontSize + 'px'); }
-applyFontSize();
+function applyTheme() {
+  const root = document.documentElement;
+  root.setAttribute('data-theme', settings.theme === 'auto' ? '' : settings.theme);
+  const a = ACCENTS[settings.accent] || ACCENTS.orange;
+  root.style.setProperty('--accent', a);
+  root.style.setProperty('--accent-soft', a + '22');
+}
+applyFontSize(); applyTheme();
+
+/* Read state, scroll memory, Private unlock, read-time */
+const readSet = () => new Set(store.get('tk-read', []));
+const isRead = (id) => readSet().has(id);
+function markRead(id) { const s = readSet(); if (!s.has(id)) { s.add(id); store.set('tk-read', [...s].slice(-5000)); } }
+function markUnread(id) { const s = readSet(); s.delete(id); store.set('tk-read', [...s]); }
+function saveScroll(id, y) { const m = store.get('tk-scroll', {}); m[id] = Math.round(y); const keys = Object.keys(m); if (keys.length > 300) delete m[keys[0]]; store.set('tk-scroll', m); }
+const getScroll = (id) => (store.get('tk-scroll', {})[id]) || 0;
+function unlocked() { try { return sessionStorage.getItem('tk-unlocked') === '1'; } catch { return false; } }
+function setUnlocked(v) { try { v ? sessionStorage.setItem('tk-unlocked', '1') : sessionStorage.removeItem('tk-unlocked'); } catch {} }
+function wordCount(thread) {
+  let n = (thread.post.html || '').split(/\s+/).length;
+  const walk = (list) => list.forEach(c => { n += (c.h || '').replace(/<[^>]+>/g, ' ').split(/\s+/).length; walk(c.r); });
+  walk(thread.comments);
+  return n;
+}
+const readMins = (thread) => Math.max(1, Math.round(wordCount(thread) / 220));
+const matchesAny = (title, csv) => { const terms = csv.split(',').map(s => s.trim().toLowerCase()).filter(Boolean); return terms.some(t => title.toLowerCase().includes(t)); };
 
 const seen = {
   has: (id) => (store.get('tk-seen', []) || []).includes(id),
@@ -359,7 +391,9 @@ async function checkSubs(force, lib = currentLib()) {
       }
       const existing = new Set((await db.all('posts')).map(p => p.id));
       // Main library never saves NSFW; the Private library saves whatever its subs return.
-      posts = posts.filter(p => p && !p.stickied && (p.num_comments || 0) > 3 && !seen.has(p.id) && !existing.has(p.id) && (nsfwLib || !p.over_18));
+      posts = posts.filter(p => p && !p.stickied && (p.num_comments || 0) > 3 && !seen.has(p.id) && !existing.has(p.id) && (nsfwLib || !p.over_18)
+        && (!settings.onlyKeywords.trim() || matchesAny(p.title || '', settings.onlyKeywords))
+        && !(settings.muteKeywords.trim() && matchesAny(p.title || '', settings.muteKeywords)));
       posts.sort((a, b) => (b.num_comments || 0) - (a.num_comments || 0));
       const pick = posts.slice(0, settings.postsPerSub);
       for (let i = 0; i < pick.length; i++) {
@@ -397,44 +431,70 @@ async function savePostFromLink(input) {
 /* ================= Views ================= */
 
 const view = $('#view');
-let filterSub = '', search = '';
+let filterSub = '', search = '', unreadOnly = false;
+const _textCache = new Map();
+async function threadText(id) {
+  if (_textCache.has(id)) return _textCache.get(id);
+  const t = await db.get('threads', id); let s = '';
+  if (t) { s = t.post.title + ' ' + (t.post.html || '') + ' '; const w = (l) => l.forEach(c => { s += (c.a || '') + ' ' + (c.h || '') + ' '; w(c.r); }); w(t.comments); }
+  s = s.replace(/<[^>]+>/g, ' ').toLowerCase(); _textCache.set(id, s); return s;
+}
+// Switch libraries, asking for the passcode when entering a locked Private library.
+async function switchLib(target) {
+  if (target === 'nsfw' && settings.pin && !unlocked()) {
+    const entry = prompt('Enter your Private passcode:');
+    if (entry == null) return;
+    if (entry !== settings.pin) { toast('Wrong passcode.'); return; }
+    setUnlocked(true);
+  }
+  setLib(target); filterSub = ''; search = ''; unreadOnly = false; renderHome();
+}
 const ICONS = {
   pin: '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z" fill="currentColor"/></svg>',
   refresh: '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.9 4.5M20 5v6h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 const isStandalone = () => navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
 const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+const isAndroid = () => /Android/.test(navigator.userAgent);
 
 function installCardHtml() {
   let hidden = false; try { hidden = sessionStorage.getItem('tk-install-hidden') === '1'; } catch {}
-  if (!isIOS() || isStandalone() || hidden) return '';
-  return `<section class="card notice"><div class="card-head"><h2>Install it on your iPhone</h2><button class="x" id="installClose" aria-label="Hide">×</button></div>
-    <ol class="steps"><li>In Safari, tap the Share button → <b>Add to Home Screen</b>.</li><li>Open ThreadKeep from the new icon. Your saved threads live there.</li></ol></section>`;
+  if (isStandalone() || hidden || (!isIOS() && !isAndroid())) return '';
+  const steps = isAndroid()
+    ? '<li>In Chrome, tap the <b>⋮</b> menu → <b>Add to Home screen</b> (or <b>Install app</b>).</li><li>Open ThreadKeep from the new icon. Your saved threads live there.</li>'
+    : '<li>In Safari, tap the Share button → <b>Add to Home Screen</b>.</li><li>Open ThreadKeep from the new icon. Your saved threads live there.</li>';
+  return `<section class="card notice"><div class="card-head"><h2>Install it on your ${isAndroid() ? 'phone' : 'iPhone'}</h2><button class="x" id="installClose" aria-label="Hide">×</button></div>
+    <ol class="steps">${steps}</ol></section>`;
 }
 
 async function renderHome() {
   const lib = currentLib();
+  if (lib === 'nsfw' && settings.hidePrivate && !unlocked()) { setLib('main'); return renderHome(); }
   setHeader(lib === 'nsfw' ? '🔒 Private' : 'ThreadKeep', false);
   const all = await db.all('posts');
   const posts = all.filter(p => (p.lib || 'main') === lib).sort((a, b) => b.savedAt - a.savedAt);
   const used = all.reduce((n, p) => n + (p.bytes || 0), 0);
   const pct = Math.min(100, used / limitBytes() * 100);
-  const nsfwCount = all.filter(p => (p.lib || 'main') === 'nsfw').length;
+  const privCount = all.filter(p => (p.lib || 'main') === 'nsfw').length;
+  const unreadCount = posts.filter(p => !isRead(p.id)).length;
   const subCounts = {}; for (const p of posts) if (p.subreddit) subCounts[p.subreddit] = (subCounts[p.subreddit] || 0) + 1;
   const subChips = Object.keys(subCounts).sort((a, b) => subCounts[b] - subCounts[a]);
   if (filterSub && !subCounts[filterSub]) filterSub = '';
-  const q = search.toLowerCase();
-  const shown = posts.filter(p => (!filterSub || p.subreddit === filterSub) && (!q || (p.title + ' ' + p.subreddit).toLowerCase().includes(q)));
+  const q = search.trim().toLowerCase();
+  let shown = posts.filter(p => !filterSub || p.subreddit === filterSub);
+  if (q) { const out = []; for (const p of shown) { if ((p.title + ' ' + p.subreddit).toLowerCase().includes(q) || (await threadText(p.id)).includes(q)) out.push(p); } shown = out; }
+  if (unreadOnly) shown = shown.filter(p => !isRead(p.id));
   const ls = lastSync(lib);
+  const showPrivateTab = lib === 'nsfw' || !settings.hidePrivate || unlocked();
   const srcLabel = lib === 'nsfw'
     ? (settings.nsfwSubs.map(s => 'r/' + esc(s)).join('  ') || 'No subreddits yet')
-    : (settings.subs.map(s => 'r/' + esc(s)).join('  ') + (settings.includePopular ? (settings.subs.length ? '  + popular mix' : 'Popular mix') : '')) || 'Nothing selected';
+    : ((settings.subs.map(s => 'r/' + esc(s)).join('  ') + (settings.includePopular ? (settings.subs.length ? '  + popular mix' : 'Popular mix') : '')) || 'Nothing selected');
   const hasSources = sourcesFor(lib).length > 0;
 
   view.innerHTML = `
     <div class="libswitch" id="libswitch">
       <button data-lib="main" aria-pressed="${lib === 'main'}">Main</button>
-      <button data-lib="nsfw" aria-pressed="${lib === 'nsfw'}">🔒 Private${nsfwCount ? ` <small>${nsfwCount}</small>` : ''}</button>
+      ${showPrivateTab ? `<button data-lib="nsfw" aria-pressed="${lib === 'nsfw'}">${settings.pin ? '🔒 ' : ''}Private${privCount ? ` <small>${privCount}</small>` : ''}</button>` : ''}
     </div>
     ${installCardHtml()}
     <section class="sync">
@@ -444,35 +504,89 @@ async function renderHome() {
     </section>
 
     <form class="linkrow" id="linkForm">
-      <input id="linkInput" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Or paste a reddit.com thread link">
+      <input id="linkInput" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste a reddit link${settings.hidePrivate && !unlocked() ? ' or passcode' : ''}">
       <button class="btn" type="submit">Save</button>
     </form>
 
     ${posts.length ? `
-      <div class="toolbar"><div class="gauge"><div class="gauge-bar"><div class="gauge-fill ${pct >= 95 ? 'full' : ''}" style="width:${pct}%"></div></div><span>${fmtBytes(used)} of ${fmtBytes(limitBytes())} total</span></div></div>
-      ${subChips.length > 1 ? `<div class="chips" id="chips"><button data-sub="" aria-pressed="${!filterSub}">All <small>${posts.length}</small></button>${subChips.map(s => `<button data-sub="${esc(s)}" aria-pressed="${filterSub === s}">r/${esc(s)} <small>${subCounts[s]}</small></button>`).join('')}</div>` : ''}
-      ${posts.length > 6 ? `<input type="search" id="search" class="search" placeholder="Search saved threads" value="${esc(search)}">` : ''}
-      <div class="list">${shown.map(itemHtml).join('') || '<p class="empty muted">Nothing matches.</p>'}</div>`
-      : `<p class="empty muted">No saved threads in ${lib === 'nsfw' ? 'your Private library' : 'this library'} yet.${hasSources ? ' Tap <b>Check now</b> above.' : lib === 'nsfw' ? ' Add NSFW subreddits in Settings.' : ''}</p>`}`;
+      <div class="toolbar">
+        <div class="gauge"><div class="gauge-bar"><div class="gauge-fill ${pct >= 95 ? 'full' : ''}" style="width:${pct}%"></div></div><span>${fmtBytes(used)} of ${fmtBytes(limitBytes())} total</span></div>
+        <button class="btn small" id="surpriseBtn" title="Open a random thread">🎲</button>
+      </div>
+      <div class="filterbar">
+        <button class="chip-toggle ${unreadOnly ? 'on' : ''}" id="unreadBtn">${unreadOnly ? 'Unread only' : 'Unread'}${unreadCount ? ` <small>${unreadCount}</small>` : ''}</button>
+        ${subChips.length > 1 ? subChips.slice(0, 20).map(s => `<button class="chip-toggle ${filterSub === s ? 'on' : ''}" data-sub="${esc(s)}">r/${esc(s)} <small>${subCounts[s]}</small></button>`).join('') + (filterSub ? `<button class="chip-toggle" data-sub="">All</button>` : '') : ''}
+      </div>
+      ${posts.length > 6 ? `<input type="search" id="search" class="search" placeholder="Search titles & comments" value="${esc(search)}">` : ''}
+      <div class="list" id="list">${shown.map(itemHtml).join('') || '<p class="empty muted">Nothing matches.</p>'}</div>`
+      : `<p class="empty muted">No saved threads in ${lib === 'nsfw' ? 'your Private library' : 'this library'} yet.${hasSources ? ' Tap <b>Check now</b> above.' : lib === 'nsfw' ? ' Add subreddits in Private settings.' : ''}</p>`}`;
 
-  $('#libswitch').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; setLib(b.dataset.lib); filterSub = ''; search = ''; renderHome(); };
+  $('#libswitch').onclick = (e) => { const b = e.target.closest('button'); if (b) switchLib(b.dataset.lib); };
   const cb = $('#checkBtn'); if (cb) cb.onclick = () => checkSubs(true, lib);
-  $('#linkForm').onsubmit = (e) => { e.preventDefault(); const v = $('#linkInput').value; $('#linkInput').value = ''; savePostFromLink(v); };
+  $('#linkForm').onsubmit = (e) => {
+    e.preventDefault(); const v = $('#linkInput').value.trim(); $('#linkInput').value = '';
+    if (settings.pin && v === settings.pin) { setUnlocked(true); switchLib('nsfw'); return; } // passcode unlock
+    savePostFromLink(v);
+  };
   const ic = $('#installClose'); if (ic) ic.onclick = () => { try { sessionStorage.setItem('tk-install-hidden', '1'); } catch {} renderHome(); };
-  const ch = $('#chips'); if (ch) ch.onclick = (e) => { const b = e.target.closest('button'); if (b) { filterSub = b.dataset.sub; renderHome(); } };
+  const ub = $('#unreadBtn'); if (ub) ub.onclick = () => { unreadOnly = !unreadOnly; renderHome(); };
+  const sb = $('#surpriseBtn'); if (sb) sb.onclick = () => { if (shown.length) location.hash = '#/p/' + shown[Math.floor(Math.random() * shown.length)].id; };
+  const fb = $('.filterbar'); if (fb) fb.addEventListener('click', (e) => { const b = e.target.closest('[data-sub]'); if (b) { filterSub = b.dataset.sub; renderHome(); } });
   const se = $('#search'); if (se) se.oninput = () => { search = se.value; const pos = se.selectionStart; renderHome().then(() => { const n = $('#search'); if (n) { n.focus(); n.setSelectionRange(pos, pos); } }); };
+  wireSwipe($('#list'));
+  wirePullRefresh(lib, hasSources);
 }
 
 function itemHtml(p) {
   const blur = p.nsfw && settings.blurNsfw;
-  return `<a class="item" href="#/p/${esc(p.id)}">
+  return `<div class="item-wrap"><a class="item ${isRead(p.id) ? 'read' : ''}" href="#/p/${esc(p.id)}" data-id="${esc(p.id)}">
     <div class="item-body">
-      <div class="item-sub">r/${esc(p.subreddit)}${p.nsfw ? ' <span class="tag nsfw">NSFW</span>' : ''}${p.pinned ? ` <span class="tag kept">${ICONS.pin} Kept</span>` : ''}</div>
+      <div class="item-sub">r/${esc(p.subreddit)}${!isRead(p.id) ? '<span class="dot"></span>' : ''}${p.pinned ? ` <span class="tag kept">${ICONS.pin} Kept</span>` : ''}</div>
       <div class="item-title">${esc(p.title)}</div>
-      <div class="item-meta">${plural(p.savedComments || 0, 'comment')} saved · ${fmtBytes(p.bytes)}${p.textOnly ? ' · text only' : ''}${p.complete === false ? ' · saving…' : ''}</div>
+      <div class="item-meta">${plural(p.savedComments || 0, 'comment')} · ${fmtBytes(p.bytes)}${p.textOnly ? ' · text only' : ''}${p.complete === false ? ' · saving…' : ''}</div>
     </div>
     ${p.thumb ? `<img class="thumb ${blur ? 'blurred' : ''}" src="${esc(p.thumb)}" alt="" loading="lazy" onerror="this.remove()">` : ''}
-  </a>`;
+  </a><div class="swipe-actions"><button class="sw-keep" data-id="${esc(p.id)}">${p.pinned ? 'Unkeep' : 'Keep'}</button><button class="sw-del" data-id="${esc(p.id)}">Delete</button></div></div>`;
+}
+
+// Swipe an item left to reveal Keep / Delete.
+function wireSwipe(listEl) {
+  if (!listEl) return;
+  let active = null, startX = 0, startY = 0, dx = 0, dragging = false;
+  const close = (el) => { if (el) el.style.transform = ''; };
+  const closeAll = () => listEl.querySelectorAll('.item.swiped').forEach(a => { a.classList.remove('swiped'); close(a); });
+  listEl.addEventListener('touchstart', (e) => {
+    const a = e.target.closest('.item'); if (!a) return;
+    if (active && active !== a) { active.classList.remove('swiped'); close(active); }
+    active = a; startX = e.touches[0].clientX; startY = e.touches[0].clientY; dx = 0; dragging = false;
+  }, { passive: true });
+  listEl.addEventListener('touchmove', (e) => {
+    if (!active) return; dx = e.touches[0].clientX - startX; const dy = e.touches[0].clientY - startY;
+    if (!dragging && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) dragging = true;
+    if (dragging) { const x = Math.max(-140, Math.min(0, dx + (active.classList.contains('swiped') ? -140 : 0))); active.style.transform = 'translateX(' + x + 'px)'; }
+  }, { passive: true });
+  listEl.addEventListener('touchend', () => {
+    if (!active) return; const was = active.classList.contains('swiped');
+    if (dragging) { const open = was ? dx < 60 : dx < -60; active.classList.toggle('swiped', open); active.style.transform = open ? 'translateX(-140px)' : ''; }
+    active = null;
+  });
+  listEl.addEventListener('click', async (e) => {
+    const keep = e.target.closest('.sw-keep'), del = e.target.closest('.sw-del');
+    if (keep) { const row = await db.get('posts', keep.dataset.id); if (row) { row.pinned = !row.pinned; await db.put('posts', row); } renderHome(); }
+    else if (del) { if (confirm('Delete this thread?')) { await deletePost(del.dataset.id); _textCache.delete(del.dataset.id); } renderHome(); }
+    else if (e.target.closest('.item.swiped')) { e.preventDefault(); closeAll(); }
+  });
+}
+
+// Pull down at the top to check for new threads.
+function wirePullRefresh(lib, hasSources) {
+  if (!hasSources) return;
+  let startY = 0, pulling = false;
+  view.addEventListener('touchstart', (e) => { pulling = window.scrollY <= 0; startY = e.touches[0].clientY; }, { passive: true });
+  view.addEventListener('touchend', (e) => {
+    if (!pulling) return; const dy = e.changedTouches[0].clientY - startY; pulling = false;
+    if (dy > 90 && !syncing) { toast('Checking…', 1500); checkSubs(true, lib); }
+  });
 }
 
 function commentHtml(c, level) {
@@ -495,22 +609,53 @@ async function renderPost(id) {
       ${p.media.map(m => `<figure><img src="${esc(m.url)}" alt="" loading="lazy" onerror="this.closest('figure').remove()">${m.caption ? `<figcaption>${esc(m.caption)}</figcaption>` : ''}</figure>`).join('')}
       ${p.html ? `<div class="rich">${p.html}</div>` : ''}
       ${outLink ? `<a class="link-out" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.url)}</a>` : ''}
-      <div class="post-stats">${fmtNum(p.numComments)} comments on Reddit · saved ${new Date(thread.fetchedAt).toLocaleDateString()}</div>
+      <div class="post-stats">${fmtNum(p.numComments)} comments on Reddit · ${readMins(thread)} min read · saved ${new Date(thread.fetchedAt).toLocaleDateString()}</div>
       <div class="actions">
         <button class="btn small ${row.pinned ? 'on' : ''}" id="pinBtn">${ICONS.pin} ${row.pinned ? 'Kept' : 'Keep'}</button>
-        <a class="btn small" href="${esc(p.permalink)}" target="_blank" rel="noopener noreferrer">Open on Reddit</a>
+        <button class="btn small" id="shareBtn">Share</button>
+        <a class="btn small" href="${esc(p.permalink)}" target="_blank" rel="noopener noreferrer">Reddit</a>
         <button class="btn small danger" id="delBtn">Delete</button>
       </div>
     </article>
-    <div class="comments-head"><h3>${plural(countComments(thread.comments), 'comment')}</h3><span class="muted small">Tap a name to collapse</span></div>
-    <div class="comments ${blur ? 'nsfw-blur' : ''}">${thread.comments.map(c => commentHtml(c, 0)).join('') || '<p class="muted">No comments were saved for this thread yet.</p>'}
+    <div class="comments-head"><h3>${plural(countComments(thread.comments), 'comment')}</h3><button class="btn small" id="collapseBtn">Collapse all</button></div>
+    <div class="comments ${blur ? 'nsfw-blur' : ''}" id="comments">${thread.comments.map(c => commentHtml(c, 0)).join('') || '<p class="muted">No comments were saved for this thread yet.</p>'}
       ${thread.more ? `<p class="c-more">${fmtNum(thread.more)} more comments on Reddit</p>` : ''}</div>`;
+  markRead(id);
+  // restore scroll position (continue reading)
+  const y = getScroll(id); if (y) requestAnimationFrame(() => window.scrollTo(0, y));
+  let scrollTimer; const onScroll = () => { clearTimeout(scrollTimer); scrollTimer = setTimeout(() => saveScroll(id, window.scrollY), 200); };
+  window.addEventListener('scroll', onScroll, { passive: true });
+  view._cleanup = () => window.removeEventListener('scroll', onScroll);
   view.onclick = (e) => {
     const im = e.target.closest('.nsfw-blur img:not(.revealed)'); if (im) { e.preventDefault(); im.classList.add('revealed'); return; }
     const head = e.target.closest('[data-toggle]'); if (head && !e.target.closest('a')) head.parentElement.classList.toggle('collapsed');
   };
+  let allCollapsed = false;
+  $('#collapseBtn').onclick = () => {
+    allCollapsed = !allCollapsed;
+    $('#comments').querySelectorAll(':scope > .c').forEach(c => c.classList.toggle('collapsed', allCollapsed));
+    $('#collapseBtn').textContent = allCollapsed ? 'Expand all' : 'Collapse all';
+  };
   $('#pinBtn').onclick = async () => { row.pinned = !row.pinned; await db.put('posts', row); toast(row.pinned ? 'Kept: won’t be auto-removed.' : 'No longer kept.'); renderPost(id); };
-  $('#delBtn').onclick = async () => { if (confirm('Delete this thread from your phone?')) { await deletePost(id); location.hash = '#/'; } };
+  $('#delBtn').onclick = async () => { if (confirm('Delete this thread from your phone?')) { await deletePost(id); _textCache.delete(id); location.hash = '#/'; } };
+  $('#shareBtn').onclick = () => shareThread(thread);
+}
+
+function threadToText(thread) {
+  const strip = (h) => { const d = new DOMParser().parseFromString(h || '', 'text/html'); return d.body.textContent.trim(); };
+  let out = thread.post.title + '\n' + ('https://www.reddit.com' + (thread.post.permalink || '').replace('https://www.reddit.com', '')) + '\n';
+  if (thread.post.html) out += '\n' + strip(thread.post.html) + '\n';
+  const walk = (list, depth) => list.forEach(c => { out += '\n' + '  '.repeat(depth) + c.a + ' (' + fmtNum(c.s) + '): ' + strip(c.h); walk(c.r, depth + 1); });
+  out += '\n\n--- Comments ---';
+  walk(thread.comments, 0);
+  return out;
+}
+async function shareThread(thread) {
+  const text = threadToText(thread);
+  try {
+    if (navigator.share) { await navigator.share({ title: thread.post.title, text }); return; }
+    await navigator.clipboard.writeText(text); toast('Copied the thread to your clipboard.');
+  } catch (e) { if (e && e.name === 'AbortError') return; try { await navigator.clipboard.writeText(text); toast('Copied to clipboard.'); } catch { toast('Couldn’t share.'); } }
 }
 
 function seg(name, options, current) { return `<div class="seg" data-setting="${name}">${options.map(([v, label]) => `<button type="button" data-value="${esc(v)}" aria-pressed="${String(v) === String(current)}">${label}</button>`).join('')}</div>`; }
@@ -546,6 +691,10 @@ async function renderSettings() {
       <div class="field"><label>Check for new threads</label>${seg('autoCheck', [['open', 'On open'], ['daily', 'Daily'], ['off', 'Manually']], settings.autoCheck)}
         <p class="muted small">Threads are usually a couple of weeks old, so the archive has all their comments.</p></div>
       <div class="field"><label>Comments saved per thread</label>${seg('commentsPerThread', [[50, '50'], [100, '100'], [200, '200'], [500, '500']], settings.commentsPerThread)}</div>
+      <div class="field"><label for="onlyKw">Only save titles containing <span class="muted small">(comma-separated, optional)</span></label>
+        <input type="text" id="onlyKw" class="search" style="margin:0" value="${esc(settings.onlyKeywords)}" placeholder="e.g. advice, history" autocapitalize="off"></div>
+      <div class="field"><label for="muteKw">Skip titles containing</label>
+        <input type="text" id="muteKw" class="search" style="margin:0" value="${esc(settings.muteKeywords)}" placeholder="e.g. politics, spoiler" autocapitalize="off"></div>
     </section>
 
     <section class="group"><h3>Storage (shared)</h3>
@@ -555,12 +704,28 @@ async function renderSettings() {
         <p class="muted small">Auto-saved threads go first; ones you <b>Keep</b> are never removed.</p></div>
     </section>
 
-    <section class="group"><h3>Reading</h3>
+    <section class="group"><h3>Appearance</h3>
       <div class="field"><label>Text size</label>${seg('fontSize', [[15, 'Small'], [17, 'Medium'], [19, 'Large'], [21, 'Larger']], settings.fontSize)}</div>
+      <div class="field"><label>Theme</label>${seg('theme', [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']], settings.theme)}</div>
+      <div class="field"><label>Accent colour</label>
+        <div class="accents" id="accents">${Object.entries(ACCENTS).map(([k, v]) => `<button type="button" data-accent="${k}" class="${settings.accent === k ? 'on' : ''}" style="background:${v}" aria-label="${k}"></button>`).join('')}</div></div>
+    </section>
+
+    ${lib === 'nsfw' ? `<section class="group"><h3>🔒 Private lock</h3>
+      <div class="field"><label>Passcode</label>
+        <p class="muted small" style="margin:0 0 8px">${settings.pin ? 'A passcode is set. The Private tab asks for it.' : 'Set a passcode to lock the Private library.'}</p>
+        <div class="row" style="display:flex;gap:8px">${settings.pin ? `<button class="btn" id="clearPin" style="flex:1">Remove passcode</button>` : `<button class="btn" id="setPin" style="flex:1">Set passcode</button>`}</div></div>
+      <div class="field row-field"><label for="hidePriv">Hide the Private tab until the passcode is typed</label><input type="checkbox" role="switch" class="toggle" id="hidePriv" ${settings.hidePrivate ? 'checked' : ''} ${settings.pin ? '' : 'disabled'}></div>
+      ${settings.pin ? '' : '<div class="field"><p class="muted small" style="margin:0">Set a passcode first to enable hiding.</p></div>'}
+    </section>` : ''}
+
+    <section class="group"><h3>Backup</h3>
+      <div class="field" style="display:flex;gap:8px"><button class="btn" id="exportBtn" style="flex:1">Export backup</button><button class="btn" id="importBtn" style="flex:1">Import</button><input type="file" id="importFile" accept="application/json,.json" hidden></div>
+      <div class="field"><p class="muted small" style="margin:0">Saves both libraries and settings to a file you can keep or move to another phone.</p></div>
     </section>
 
     <section class="group"><h3>Delete</h3><div class="field"><button class="btn danger block" id="wipe">Delete all saved threads</button></div></section>
-    <p class="muted small center">ThreadKeep ${APP_VERSION} · Threads come from the free Arctic Shift Reddit archive. Everything stays on this phone.</p>`;
+    <p class="muted small center">ThreadKeep ${APP_VERSION} · Threads come from the free Arctic Shift Reddit archive. Everything stays on this device.</p>`;
 
   view.querySelectorAll('.seg').forEach(s => s.addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return; const key = s.dataset.setting;
@@ -574,7 +739,41 @@ async function renderSettings() {
   const nsfwList = $('#nsfwList'); if (nsfwList) nsfwList.onclick = (e) => { const b = e.target.closest('[data-nremove]'); if (!b) return; settings.nsfwSubs = settings.nsfwSubs.filter(s => s !== b.dataset.nremove); saveSettings(); renderSettings(); };
   const incPop = $('#incPop'); if (incPop) incPop.onchange = (e) => { settings.includePopular = e.target.checked; saveSettings(); };
   const blur = $('#blurNsfw'); if (blur) blur.onchange = (e) => { settings.blurNsfw = e.target.checked; saveSettings(); };
-  $('#wipe').onclick = async () => { if (!confirm('Delete every saved thread and image from this phone?')) return; for (const p of await db.all('posts')) await deletePost(p.id); await caches.delete(MEDIA_CACHE); store.set('tk-seen', []); toast('Everything deleted.'); renderSettings(); };
+  $('#onlyKw').onchange = (e) => { settings.onlyKeywords = e.target.value; saveSettings(); };
+  $('#muteKw').onchange = (e) => { settings.muteKeywords = e.target.value; saveSettings(); };
+  $('#accents').onclick = (e) => { const b = e.target.closest('[data-accent]'); if (!b) return; settings.accent = b.dataset.accent; saveSettings(); $('#accents').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };
+  const setPin = $('#setPin'); if (setPin) setPin.onclick = () => { const a = prompt('Choose a passcode (digits or letters):'); if (!a) return; const b = prompt('Enter it again:'); if (a !== b) { toast('They didn’t match.'); return; } settings.pin = a; setUnlocked(true); saveSettings(); toast('Passcode set.'); renderSettings(); };
+  const clearPin = $('#clearPin'); if (clearPin) clearPin.onclick = () => { if (!confirm('Remove the Private passcode?')) return; settings.pin = ''; settings.hidePrivate = false; saveSettings(); toast('Passcode removed.'); renderSettings(); };
+  const hidePriv = $('#hidePriv'); if (hidePriv) hidePriv.onchange = (e) => { settings.hidePrivate = e.target.checked && !!settings.pin; saveSettings(); };
+  $('#exportBtn').onclick = exportBackup;
+  $('#importBtn').onclick = () => $('#importFile').click();
+  $('#importFile').onchange = (e) => importBackup(e.target.files[0]);
+  $('#wipe').onclick = async () => { if (!confirm('Delete every saved thread and image from this device?')) return; for (const p of await db.all('posts')) await deletePost(p.id); await caches.delete(MEDIA_CACHE); store.set('tk-seen', []); _textCache.clear(); toast('Everything deleted.'); renderSettings(); };
+}
+
+/* ================= Backup / restore ================= */
+
+async function exportBackup() {
+  try {
+    const data = { app: 'threadkeep', version: 3, exportedAt: Date.now(), settings, read: store.get('tk-read', []), posts: await db.all('posts'), threads: await db.all('threads') };
+    const file = new File([JSON.stringify(data)], 'threadkeep-backup-' + new Date().toISOString().slice(0, 10) + '.json', { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: 'ThreadKeep backup' }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(file), download: file.name }); document.body.append(a); a.click(); a.remove();
+    toast('Backup saved.');
+  } catch { toast('Couldn’t export.'); }
+}
+async function importBackup(file) {
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (data.app !== 'threadkeep') throw 0;
+    let n = 0;
+    for (const t of data.threads || []) { if (!(await db.get('threads', t.id))) await db.put('threads', t); const row = (data.posts || []).find(p => p.id === t.id); if (row && !(await db.get('posts', t.id))) { await db.put('posts', row); n++; } }
+    if (Array.isArray(data.read)) { const s = new Set([...(store.get('tk-read', []) || []), ...data.read]); store.set('tk-read', [...s]); }
+    if (data.settings) { for (const k of Object.keys(DEFAULTS)) if (k in data.settings) settings[k] = data.settings[k]; saveSettings(); }
+    _textCache.clear();
+    toast('Imported ' + n + ' threads.', 4000); renderSettings();
+  } catch { toast('That isn’t a ThreadKeep backup.', 4000); }
 }
 
 /* ================= Shell, routing, startup ================= */
@@ -582,7 +781,7 @@ async function renderSettings() {
 function setHeader(title, back) { $('#title').textContent = title; $('#backBtn').hidden = !back; $('#settingsBtn').hidden = location.hash === '#/settings'; }
 let renderTimer;
 function render() { clearTimeout(renderTimer); renderTimer = setTimeout(route, 20); }
-function route() { view.onclick = null; const h = location.hash; if (h.startsWith('#/p/')) return renderPost(decodeURIComponent(h.slice(4))); if (h === '#/settings') return renderSettings(); return renderHome(); }
+function route() { if (view._cleanup) { view._cleanup(); view._cleanup = null; } view.onclick = null; const h = location.hash; if (h.startsWith('#/p/')) return renderPost(decodeURIComponent(h.slice(4))); if (h === '#/settings') return renderSettings(); return renderHome(); }
 window.addEventListener('hashchange', () => { route(); window.scrollTo(0, 0); });
 $('#backBtn').onclick = () => { location.hash = '#/'; };
 $('#settingsBtn').onclick = () => { location.hash = '#/settings'; };

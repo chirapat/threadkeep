@@ -1,5 +1,5 @@
 /* ThreadKeep service worker: keeps the app itself available offline and serves saved images. */
-const APP_CACHE = 'tk-app-v11';
+const APP_CACHE = 'tk-app-v12';
 const MEDIA_CACHE = 'tk-media-v1';
 const APP_FILES = ['./', 'index.html', 'app.js', 'styles.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 

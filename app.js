@@ -8,7 +8,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.3';
+const APP_VERSION = '4.4';
 const MEDIA_CACHE = 'tk-media-v1';
 const API = 'https://arctic-shift.photon-reddit.com/api';
 const MB = 1024 * 1024;
@@ -35,6 +35,7 @@ const DEFAULTS = {
   muteKeywords: '',         // skip threads whose title matches any
   pin: '',                  // passcode for the Private library ('' = none)
   hidePrivate: false,       // hide the Private tab until unlocked by passcode
+  hideSubs: false,          // hide r/subreddit names in the Private library
   theme: 'auto',            // 'auto' | 'light' | 'dark'
   accent: 'orange',         // accent colour key
 };
@@ -439,7 +440,7 @@ async function savePostFromLink(input) {
 /* ================= Views ================= */
 
 const view = $('#view');
-let filterSub = '', search = '', unreadOnly = false;
+let filterSub = '', search = '', readFilter = 'all';
 const _textCache = new Map();
 async function threadText(id) {
   if (_textCache.has(id)) return _textCache.get(id);
@@ -457,7 +458,7 @@ async function switchLib(target) {
     setUnlocked(true);
   }
   if (target === 'main') setUnlocked(false);
-  setLib(target); filterSub = ''; search = ''; unreadOnly = false; renderHome();
+  setLib(target); filterSub = ''; search = ''; readFilter = 'all'; renderHome();
 }
 const ICONS = {
   pin: '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z" fill="currentColor"/></svg>',
@@ -488,13 +489,14 @@ async function renderHome() {
   const pct = Math.min(100, used / limitBytes() * 100);
   const privCount = all.filter(p => (p.lib || 'main') === 'nsfw').length;
   const unreadCount = posts.filter(p => !isRead(p.id)).length;
+  const readCount = posts.length - unreadCount;
   const subCounts = {}; for (const p of posts) if (p.subreddit) subCounts[p.subreddit] = (subCounts[p.subreddit] || 0) + 1;
   const subChips = Object.keys(subCounts).sort((a, b) => subCounts[b] - subCounts[a]);
   if (filterSub && !subCounts[filterSub]) filterSub = '';
   const q = search.trim().toLowerCase();
   let shown = posts.filter(p => !filterSub || p.subreddit === filterSub);
   if (q) { const out = []; for (const p of shown) { if ((p.title + ' ' + p.subreddit).toLowerCase().includes(q) || (await threadText(p.id)).includes(q)) out.push(p); } shown = out; }
-  if (unreadOnly) shown = shown.filter(p => !isRead(p.id));
+  if (readFilter === 'unread') shown = shown.filter(p => !isRead(p.id)); else if (readFilter === 'read') shown = shown.filter(p => isRead(p.id));
   const ls = lastSync(lib);
   const showPrivateTab = lib === 'nsfw' || !settings.hidePrivate || unlocked();
   const srcLabel = lib === 'nsfw'
@@ -525,8 +527,9 @@ async function renderHome() {
         <button class="btn small" id="surpriseBtn" title="Open a random thread">🎲</button>
       </div>
       <div class="filterbar">
-        <button class="chip-toggle ${unreadOnly ? 'on' : ''}" id="unreadBtn">${unreadOnly ? 'Unread only' : 'Unread'}${unreadCount ? ` <small>${unreadCount}</small>` : ''}</button>
-        ${subChips.length > 1 ? subChips.slice(0, 20).map(s => `<button class="chip-toggle ${filterSub === s ? 'on' : ''}" data-sub="${esc(s)}">r/${esc(s)} <small>${subCounts[s]}</small></button>`).join('') + (filterSub ? `<button class="chip-toggle" data-sub="">All</button>` : '') : ''}
+        <button class="chip-toggle ${readFilter === 'unread' ? 'on' : ''}" data-read="unread">Unread${unreadCount ? ` <small>${unreadCount}</small>` : ''}</button>
+        <button class="chip-toggle ${readFilter === 'read' ? 'on' : ''}" data-read="read">Read${readCount ? ` <small>${readCount}</small>` : ''}</button>
+        ${subChips.length > 1 && !(lib === 'nsfw' && settings.hideSubs) ? subChips.slice(0, 20).map(s => `<button class="chip-toggle ${filterSub === s ? 'on' : ''}" data-sub="${esc(s)}">r/${esc(s)} <small>${subCounts[s]}</small></button>`).join('') + (filterSub ? `<button class="chip-toggle" data-sub="">All</button>` : '') : ''}
       </div>
       ${posts.length > 6 ? `<input type="search" id="search" class="search" placeholder="Search titles & comments" value="${esc(search)}">` : ''}
       <div class="list" id="list">${shown.map(itemHtml).join('') || '<p class="empty muted">Nothing matches.</p>'}</div>`
@@ -537,13 +540,15 @@ async function renderHome() {
   const cb = $('#checkBtn'); if (cb) cb.onclick = () => checkSubs(true, lib);
   $('#linkForm').onsubmit = (e) => {
     e.preventDefault(); const v = $('#linkInput').value.trim(); $('#linkInput').value = '';
-    if (settings.pin && v === settings.pin) { setUnlocked(true); setLib('nsfw'); filterSub = ''; search = ''; unreadOnly = false; renderHome(); return; } // passcode unlock (no second prompt)
+    if (settings.pin && v === settings.pin) { setUnlocked(true); setLib('nsfw'); filterSub = ''; search = ''; readFilter = 'all'; renderHome(); return; } // passcode unlock (no second prompt)
     savePostFromLink(v);
   };
   const ic = $('#installClose'); if (ic) ic.onclick = () => { try { sessionStorage.setItem('tk-install-hidden', '1'); } catch {} renderHome(); };
-  const ub = $('#unreadBtn'); if (ub) ub.onclick = () => { unreadOnly = !unreadOnly; renderHome(); };
   const sb = $('#surpriseBtn'); if (sb) sb.onclick = () => { if (shown.length) location.hash = '#/p/' + shown[Math.floor(Math.random() * shown.length)].id; };
-  const fb = $('.filterbar'); if (fb) fb.addEventListener('click', (e) => { const b = e.target.closest('[data-sub]'); if (b) { filterSub = b.dataset.sub; renderHome(); } });
+  const fb = $('.filterbar'); if (fb) fb.addEventListener('click', (e) => {
+    const r = e.target.closest('[data-read]'); if (r) { readFilter = readFilter === r.dataset.read ? 'all' : r.dataset.read; renderHome(); return; }
+    const b = e.target.closest('[data-sub]'); if (b) { filterSub = b.dataset.sub; renderHome(); }
+  });
   const se = $('#search'); if (se) se.oninput = () => { search = se.value; const pos = se.selectionStart; renderHome().then(() => { const n = $('#search'); if (n) { n.focus(); n.setSelectionRange(pos, pos); } }); };
   wireSwipe($('#list'));
   wirePullRefresh(lib, hasSources);
@@ -551,9 +556,10 @@ async function renderHome() {
 
 function itemHtml(p) {
   const blur = p.nsfw && settings.blurNsfw;
+  const hideSub = (p.lib || 'main') === 'nsfw' && settings.hideSubs;
   return `<div class="item-wrap"><a class="item ${isRead(p.id) ? 'read' : ''}" href="#/p/${esc(p.id)}" data-id="${esc(p.id)}">
     <div class="item-body">
-      <div class="item-sub">r/${esc(p.subreddit)}${!isRead(p.id) ? '<span class="dot"></span>' : ''}${p.pinned ? ` <span class="tag kept">${ICONS.pin} Kept</span>` : ''}</div>
+      <div class="item-sub">${hideSub ? 'Private' : 'r/' + esc(p.subreddit)}${!isRead(p.id) ? '<span class="dot"></span>' : ''}${p.pinned ? ` <span class="tag kept">${ICONS.pin} Kept</span>` : ''}</div>
       <div class="item-title">${esc(p.title)}</div>
       <div class="item-meta">${plural(p.savedComments || 0, 'comment')} · ${fmtBytes(p.bytes)}${p.textOnly ? ' · text only' : ''}${p.complete === false ? ' · saving…' : ''}</div>
     </div>
@@ -611,7 +617,8 @@ function commentHtml(c, level) {
 async function renderPost(id) {
   const row = await db.get('posts', id); const thread = await db.get('threads', id);
   if (!row || !thread) { setHeader('', true); view.innerHTML = '<p class="empty muted">This thread isn’t saved anymore.</p>'; return; }
-  const p = thread.post; setHeader('r/' + p.subreddit, true);
+  const p = thread.post; const hideSub = (row.lib || 'main') === 'nsfw' && settings.hideSubs;
+  setHeader(hideSub ? '🔒 Private' : 'r/' + p.subreddit, true);
   const blur = p.nsfw && settings.blurNsfw;
   const outLink = p.url && !/^https:\/\/(i|v|preview)\.redd\.it\//.test(p.url) && !/\.(jpe?g|png|gif|webp)(\?|$)/i.test(p.url) && !p.url.includes('/comments/') && !p.url.includes('/gallery/');
   view.innerHTML = `
@@ -684,6 +691,7 @@ async function renderSettings() {
           <form class="linkrow" id="nsfwForm" style="margin-top:10px"><input id="nsfwInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. AskRedditAfterDark"><button class="btn" type="submit">Add</button></form>
         </div>
         <div class="field row-field"><label for="blurNsfw">Blur images until tapped</label><input type="checkbox" role="switch" class="toggle" id="blurNsfw" ${settings.blurNsfw ? 'checked' : ''}></div>
+        <div class="field row-field"><label for="hideSubs">Hide subreddit names (r/…)<span class="muted small"><br>No one can see which subs you're reading</span></label><input type="checkbox" role="switch" class="toggle" id="hideSubs" ${settings.hideSubs ? 'checked' : ''}></div>
       </section>`
     : `<section class="group"><h3>What to auto-save</h3>
         <div class="field row-field"><label for="incPop">Popular mix <span class="muted small">(hot threads from across Reddit)</span></label><input type="checkbox" role="switch" class="toggle" id="incPop" ${settings.includePopular ? 'checked' : ''}></div>
@@ -751,6 +759,7 @@ async function renderSettings() {
   const nsfwList = $('#nsfwList'); if (nsfwList) nsfwList.onclick = (e) => { const b = e.target.closest('[data-nremove]'); if (!b) return; settings.nsfwSubs = settings.nsfwSubs.filter(s => s !== b.dataset.nremove); saveSettings(); renderSettings(); };
   const incPop = $('#incPop'); if (incPop) incPop.onchange = (e) => { settings.includePopular = e.target.checked; saveSettings(); };
   const blur = $('#blurNsfw'); if (blur) blur.onchange = (e) => { settings.blurNsfw = e.target.checked; saveSettings(); };
+  const hideSubs = $('#hideSubs'); if (hideSubs) hideSubs.onchange = (e) => { settings.hideSubs = e.target.checked; saveSettings(); };
   $('#onlyKw').onchange = (e) => { settings.onlyKeywords = e.target.value; saveSettings(); };
   $('#muteKw').onchange = (e) => { settings.muteKeywords = e.target.value; saveSettings(); };
   $('#accents').onclick = (e) => { const b = e.target.closest('[data-accent]'); if (!b) return; settings.accent = b.dataset.accent; saveSettings(); $('#accents').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };

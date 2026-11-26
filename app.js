@@ -8,7 +8,7 @@
  */
 'use strict';
 
-const APP_VERSION = '3.2';
+const APP_VERSION = '3.3';
 const MEDIA_CACHE = 'tk-media-v1';
 const API = 'https://arctic-shift.photon-reddit.com/api';
 const MB = 1024 * 1024;
@@ -516,37 +516,43 @@ async function renderPost(id) {
 function seg(name, options, current) { return `<div class="seg" data-setting="${name}">${options.map(([v, label]) => `<button type="button" data-value="${esc(v)}" aria-pressed="${String(v) === String(current)}">${label}</button>`).join('')}</div>`; }
 
 async function renderSettings() {
-  setHeader('Settings', true);
+  const lib = currentLib();
+  setHeader(lib === 'nsfw' ? '🔒 Private settings' : 'Settings', true);
   const used = await usedBytes(); let persisted = false; try { persisted = await navigator.storage.persisted(); } catch {}
+  const sourcesGroup = lib === 'nsfw'
+    ? `<section class="group"><h3>🔒 Private library — subreddits</h3>
+        <div class="field">
+          <p class="muted small" style="margin:0 0 8px">These download only in the Private surface. The app always opens on Main.</p>
+          <div class="sub-list" id="nsfwList">${settings.nsfwSubs.map(s => `<span class="sub-tag">r/${esc(s)}<button type="button" data-nremove="${esc(s)}" aria-label="Remove">×</button></span>`).join('') || '<span class="muted small">None yet.</span>'}</div>
+          <form class="linkrow" id="nsfwForm" style="margin-top:10px"><input id="nsfwInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Add an NSFW subreddit"><button class="btn" type="submit">Add</button></form>
+        </div>
+        <div class="field row-field"><label for="blurNsfw">Blur images until tapped</label><input type="checkbox" role="switch" class="toggle" id="blurNsfw" ${settings.blurNsfw ? 'checked' : ''}></div>
+      </section>`
+    : `<section class="group"><h3>What to auto-save</h3>
+        <div class="field row-field"><label for="incPop">Popular mix <span class="muted small">(hot threads from across Reddit)</span></label><input type="checkbox" role="switch" class="toggle" id="incPop" ${settings.includePopular ? 'checked' : ''}></div>
+        <div class="field">
+          <label>Your focus subreddits</label>
+          <div class="sub-list" id="mainSubList">${settings.subs.map(s => `<span class="sub-tag">r/${esc(s)}<button type="button" data-remove="${esc(s)}" aria-label="Remove">×</button></span>`).join('') || '<span class="muted small">None yet — the popular mix will be used.</span>'}</div>
+          <form class="linkrow" id="subForm" style="margin-top:10px"><input id="subInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Add a subreddit, e.g. AskReddit"><button class="btn" type="submit">Add</button></form>
+        </div>
+      </section>`;
   view.innerHTML = `
-    <section class="group"><h3>What to auto-save</h3>
-      <div class="field row-field"><label for="incPop">Popular mix <span class="muted small">(hot threads from across Reddit)</span></label><input type="checkbox" role="switch" class="toggle" id="incPop" ${settings.includePopular ? 'checked' : ''}></div>
-      <div class="field">
-        <label>Your focus subreddits</label>
-        <div class="sub-list" id="mainSubList">${settings.subs.map(s => `<span class="sub-tag">r/${esc(s)}<button type="button" data-remove="${esc(s)}" aria-label="Remove">×</button></span>`).join('') || '<span class="muted small">None yet — the popular mix will be used.</span>'}</div>
-        <form class="linkrow" id="subForm" style="margin-top:10px"><input id="subInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Add a subreddit, e.g. AskReddit"><button class="btn" type="submit">Add</button></form>
-      </div>
+    <div class="muted small" style="margin:0 0 12px">Configuring the <b>${lib === 'nsfw' ? 'Private' : 'Main'}</b> surface · switch with the tabs on the home page.</div>
+    ${sourcesGroup}
+
+    <section class="group"><h3>Downloads</h3>
       <div class="field"><label>Threads per subreddit, each check</label>${seg('postsPerSub', [[3, '3'], [5, '5'], [10, '10'], [25, '25']], settings.postsPerSub)}
         <p class="muted small">The most-commented recent threads are saved first.</p></div>
       <div class="field"><label>Check for new threads</label>${seg('autoCheck', [['open', 'On open'], ['daily', 'Daily'], ['off', 'Manually']], settings.autoCheck)}
         <p class="muted small">Threads are usually a couple of weeks old, so the archive has all their comments.</p></div>
+      <div class="field"><label>Comments saved per thread</label>${seg('commentsPerThread', [[50, '50'], [100, '100'], [200, '200'], [500, '500']], settings.commentsPerThread)}</div>
     </section>
 
-    <section class="group"><h3>Download size</h3>
-      <div class="field"><label>Comments saved per thread</label>${seg('commentsPerThread', [[50, '50'], [100, '100'], [200, '200'], [500, '500']], settings.commentsPerThread)}</div>
+    <section class="group"><h3>Storage (shared)</h3>
       <div class="field"><label>Total storage</label>${seg('limitMB', [[50, '50 MB'], [250, '250 MB'], [500, '500 MB'], [1000, '1 GB'], [2000, '2 GB']], settings.limitMB)}
-        <p class="muted small">Using ${fmtBytes(used)}.${persisted ? '' : ' Open from your Home Screen so iPhone keeps your threads.'}</p></div>
+        <p class="muted small">Using ${fmtBytes(used)} across both libraries.${persisted ? '' : ' Open from your Home Screen so iPhone keeps your threads.'}</p></div>
       <div class="field"><label>When storage is full</label>${seg('whenFull', [['evict', 'Remove oldest'], ['stop', 'Stop saving']], settings.whenFull)}
         <p class="muted small">Auto-saved threads go first; ones you <b>Keep</b> are never removed.</p></div>
-    </section>
-
-    <section class="group"><h3>🔒 Private library (NSFW)</h3>
-      <div class="field">
-        <p class="muted small" style="margin:0 0 8px">A separate surface. Switch to it with the <b>Private</b> tab at the top of the home page. These subreddits download only there.</p>
-        <div class="sub-list" id="nsfwList">${settings.nsfwSubs.map(s => `<span class="sub-tag">r/${esc(s)}<button type="button" data-nremove="${esc(s)}" aria-label="Remove">×</button></span>`).join('') || '<span class="muted small">None yet.</span>'}</div>
-        <form class="linkrow" id="nsfwForm" style="margin-top:10px"><input id="nsfwInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Add an NSFW subreddit"><button class="btn" type="submit">Add</button></form>
-      </div>
-      <div class="field row-field"><label for="blurNsfw">Blur NSFW images until tapped</label><input type="checkbox" role="switch" class="toggle" id="blurNsfw" ${settings.blurNsfw ? 'checked' : ''}></div>
     </section>
 
     <section class="group"><h3>Reading</h3>
@@ -562,12 +568,12 @@ async function renderSettings() {
     s.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     if (key === 'limitMB') makeRoom(0);
   }));
-  $('#subForm').onsubmit = (e) => { e.preventDefault(); const name = cleanSub($('#subInput').value); if (!name) { toast('Type a subreddit name, e.g. AskReddit.'); return; } if (settings.subs.some(s => s.toLowerCase() === name.toLowerCase())) { toast('Already added.'); return; } settings.subs.push(name); saveSettings(); renderSettings(); checkSubs(true, 'main'); };
-  $('#mainSubList').onclick = (e) => { const b = e.target.closest('[data-remove]'); if (!b) return; settings.subs = settings.subs.filter(s => s !== b.dataset.remove); saveSettings(); renderSettings(); };
-  $('#nsfwForm').onsubmit = (e) => { e.preventDefault(); const name = cleanSub($('#nsfwInput').value); if (!name) { toast('Type a subreddit name.'); return; } if (settings.nsfwSubs.some(s => s.toLowerCase() === name.toLowerCase())) { toast('Already added.'); return; } settings.nsfwSubs.push(name); saveSettings(); renderSettings(); };
-  $('#nsfwList').onclick = (e) => { const b = e.target.closest('[data-nremove]'); if (!b) return; settings.nsfwSubs = settings.nsfwSubs.filter(s => s !== b.dataset.nremove); saveSettings(); renderSettings(); };
-  $('#incPop').onchange = (e) => { settings.includePopular = e.target.checked; saveSettings(); };
-  $('#blurNsfw').onchange = (e) => { settings.blurNsfw = e.target.checked; saveSettings(); };
+  const subForm = $('#subForm'); if (subForm) subForm.onsubmit = (e) => { e.preventDefault(); const name = cleanSub($('#subInput').value); if (!name) { toast('Type a subreddit name, e.g. AskReddit.'); return; } if (settings.subs.some(s => s.toLowerCase() === name.toLowerCase())) { toast('Already added.'); return; } settings.subs.push(name); saveSettings(); renderSettings(); checkSubs(true, 'main'); };
+  const mainList = $('#mainSubList'); if (mainList) mainList.onclick = (e) => { const b = e.target.closest('[data-remove]'); if (!b) return; settings.subs = settings.subs.filter(s => s !== b.dataset.remove); saveSettings(); renderSettings(); };
+  const nsfwForm = $('#nsfwForm'); if (nsfwForm) nsfwForm.onsubmit = (e) => { e.preventDefault(); const name = cleanSub($('#nsfwInput').value); if (!name) { toast('Type a subreddit name.'); return; } if (settings.nsfwSubs.some(s => s.toLowerCase() === name.toLowerCase())) { toast('Already added.'); return; } settings.nsfwSubs.push(name); saveSettings(); renderSettings(); checkSubs(true, 'nsfw'); };
+  const nsfwList = $('#nsfwList'); if (nsfwList) nsfwList.onclick = (e) => { const b = e.target.closest('[data-nremove]'); if (!b) return; settings.nsfwSubs = settings.nsfwSubs.filter(s => s !== b.dataset.nremove); saveSettings(); renderSettings(); };
+  const incPop = $('#incPop'); if (incPop) incPop.onchange = (e) => { settings.includePopular = e.target.checked; saveSettings(); };
+  const blur = $('#blurNsfw'); if (blur) blur.onchange = (e) => { settings.blurNsfw = e.target.checked; saveSettings(); };
   $('#wipe').onclick = async () => { if (!confirm('Delete every saved thread and image from this phone?')) return; for (const p of await db.all('posts')) await deletePost(p.id); await caches.delete(MEDIA_CACHE); store.set('tk-seen', []); toast('Everything deleted.'); renderSettings(); };
 }
 

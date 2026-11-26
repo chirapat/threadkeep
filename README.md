@@ -1,54 +1,44 @@
 # ThreadKeep
 
-Save Reddit threads (post, comments and images) on your iPhone and read them offline. Free, with no server and no account needed.
+Save Reddit threads with their full comments and read them offline on your iPhone. Free, no Reddit account, no API key, no computer.
 
-## 1. Install it on your iPhone
+It pulls threads from **[Arctic Shift](https://arctic-shift.photon-reddit.com)**, a free public Reddit archive — so it works even though Reddit has locked down its own API.
 
-1. Open Safari (it has to be Safari) and go to `https://chirapat.github.io/threadkeep/`
-2. Tap the Share button (the square with an arrow) → scroll down → Add to Home Screen → Add.
-3. From now on, always open ThreadKeep from the new icon on your Home Screen. Your saved posts live there, separate from Safari.
+## Install (one time)
 
-## 2. Add a free Reddit key (recommended)
+1. Open `https://chirapat.github.io/threadkeep/` in **Safari**.
+2. Tap **Share → Add to Home Screen → Add**.
+3. Always open ThreadKeep from the Home Screen icon. Your saved threads live there, offline.
 
-With a key, ThreadKeep downloads any post or a subreddit's top posts directly — all comments — with no Shortcut.
+## Use it
 
-1. On your iPhone, sign in at [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps).
-2. Tap **create another app…**, name it **ThreadKeep**, choose **installed app**.
-3. Redirect URI: `https://chirapat.github.io/threadkeep/`
-4. Tap **create app**, copy the short code under the app's name.
-5. In ThreadKeep → **Settings → Reddit key**, paste it. You'll see "Reddit key works ✓".
+1. Open **Settings** (gear icon) → **Subreddits to auto-save** → add e.g. `AskReddit`, `explainlikeimfive`.
+2. Back on the home page, tap **Check now** (or it checks automatically when you open the app).
+3. ThreadKeep saves the **most-discussed threads** from each subreddit, with their whole comment trees, for offline reading.
 
-**"Max clients have been reached"?** Your account already has the most apps Reddit allows. Delete or revoke an app you don't use on that page to free a slot, then create ThreadKeep.
+You can also paste any **reddit.com thread link** on the home page to save that one thread.
 
-### Saving (with a key)
-On the home page: paste a reddit.com post link and tap **Save**, or type a subreddit, choose **Top 5/10/25/50**, a **time range** and **comments per thread**, and tap **Grab**.
+## What you control
 
-## 3. No key? The Shortcut (fallback)
+- **Subreddits** to follow, and **how many threads** per subreddit each check (3 / 5 / 10 / 25).
+- **Comments saved per thread** (50 / 100 / 200 / 500) — the main size lever.
+- **Total storage** (250 MB / 500 MB / 1 GB / 2 GB), and whether a full library **removes the oldest** or **stops saving**. Threads you **Keep** are never auto-removed.
+- **NSFW**: show or hide in your library, auto-download or not, and blur images until tapped.
+- When to check: **on open**, **daily**, or **manually**.
 
-Without a key, a free Shortcut saves the single post you have open in Safari, with the comments loaded on screen.
+## How it reads
 
-1. Open the **Settings** app → **Apps** → **Shortcuts** → **Advanced** → turn on **Allow Running Scripts**.
-2. On your iPhone, open [Save to ThreadKeep.shortcut](https://chirapat.github.io/threadkeep/shortcut/Save%20to%20ThreadKeep.shortcut) → **Add Shortcut**.
-3. Sign in at reddit.com in Safari. Open a post, scroll to load comments, then **Share → Save to ThreadKeep**, and tap **Paste from Shortcut** in the app.
+- Threads are grouped by subreddit with filter chips, search, and an NSFW switch.
+- Tap a commenter's name to collapse that comment and its replies.
+- Images are saved for offline viewing; videos are not (only their preview image).
 
-## Reading
+## Honest limitations
 
-- **Filter** by subreddit, **search**, and switch **NSFW** on or off from the home page.
-- **Tap a commenter's name** to collapse that comment and its replies.
-- **Keep** a thread so it's never removed when storage fills up.
-
-## Settings
-
-- **Space for saved threads:** 250 MB, 500 MB, 1 GB or 2 GB.
-- **When it's full:** remove the oldest threads (except kept ones), or save new ones as text only.
-- **Text size**, and whether to **blur NSFW images** until tapped.
-
-## Limitations
-
-- **Saving isn't automatic.** iPhone doesn't let web apps run in the background, so you start each save with the Shortcut. Reddit also blocks downloads that aren't signed in, which is why the Shortcut passes your Safari sign-in.
-- **Videos** aren't saved. Only their preview picture is.
-- **Very large threads** save the top comments (up to 200) rather than every reply.
+- **Threads are usually a couple of weeks old.** The archive needs time to collect a thread's comments, so ThreadKeep saves well-discussed threads from a mature window rather than this minute's posts. For reading discussions offline, that's a fair trade.
+- **Ranked by number of comments**, not upvotes (the archive's scores aren't reliable). In practice "most comments" surfaces the best discussions.
+- **Not truly automatic in the background** — iPhone doesn't let web apps run in the background, so a "check" happens when you open the app.
+- The archive is a free community service and rate-limits heavy use, so a big check takes a little while.
 
 ## Hosting your own copy
 
-Upload the files in this folder to any free static host with HTTPS (GitHub Pages, Cloudflare Pages, Netlify).
+Upload these files to any free static host with HTTPS (GitHub Pages, Cloudflare Pages, Netlify). No server code needed.

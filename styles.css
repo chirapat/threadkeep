@@ -85,24 +85,19 @@ main { max-width: 680px; margin: 0 auto; padding: 8px 16px 48px; }
 }
 .paste-btn:active { transform: scale(.985); }
 
-/* Key panel (download directly with a Reddit key) */
-.keypanel { margin-bottom: 16px; }
-.keypanel .linkrow { display: flex; gap: 8px; }
-.keypanel .linkrow input { flex: 1; min-width: 0; margin: 0; }
-.keypanel .linkrow .btn { flex: none; }
-.keypanel .or { display: flex; align-items: center; gap: 10px; margin: 14px 0; color: var(--muted); font-size: 13px; }
-.keypanel .or::before, .keypanel .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
-.keypanel .grab input { margin: 0 0 10px; }
-.keypanel .grabrow { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; margin-bottom: 12px; color: var(--muted); font-size: 14px; }
-.keypanel .grabrow label { display: inline-flex; align-items: center; gap: 6px; }
-.keypanel select {
-  min-height: 40px; padding: 0 10px; border: 0; border-radius: 10px; background: var(--sunk);
-  color: var(--text); font-size: 15px; font-weight: 600; -webkit-appearance: none; appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
-  background-position: right 12px center, right 7px center; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; padding-right: 26px;
-}
 .btn.primary { background: var(--accent); color: var(--accent-ink); }
-#cid { width: 100%; margin: 0 0 4px; }
+
+/* Sync status + add-link rows */
+.sync { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--surface); border-radius: var(--r); padding: 12px 14px; margin-bottom: 12px; }
+.sync-subs { font-weight: 650; }
+.sync .btn { flex: none; }
+.linkrow { display: flex; gap: 8px; margin-bottom: 14px; }
+.linkrow input { flex: 1; min-width: 0; margin: 0; }
+.linkrow .btn { flex: none; }
+.sub-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.sub-tag { display: inline-flex; align-items: center; gap: 2px; padding: 5px 4px 5px 12px; border-radius: 99px; background: var(--sunk); font-weight: 650; font-size: 14px; }
+.sub-tag button { width: 26px; height: 26px; border: 0; border-radius: 99px; background: transparent; font-size: 17px; line-height: 1; color: var(--muted); cursor: pointer; }
+.a.btn, a.btn.primary { text-decoration: none; }
 
 .toggle {
   appearance: none; -webkit-appearance: none; flex: none; position: relative; margin: 0;

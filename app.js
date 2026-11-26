@@ -8,7 +8,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.2';
+const APP_VERSION = '4.3';
 const MEDIA_CACHE = 'tk-media-v1';
 const API = 'https://arctic-shift.photon-reddit.com/api';
 const MB = 1024 * 1024;
@@ -679,9 +679,9 @@ async function renderSettings() {
   const sourcesGroup = lib === 'nsfw'
     ? `<section class="group"><h3>🔒 Private library — subreddits</h3>
         <div class="field">
-          <p class="muted small" style="margin:0 0 8px">These download only in the Private surface. The app always opens on Main.</p>
+          <p class="muted small" style="margin:0 0 8px">Download into the Private surface (hidden from Main). Best with <b>text discussion</b> subreddits — e.g. <b>AskRedditAfterDark</b>, <b>sex</b>, <b>confession</b>, <b>DirtyConfession</b>. Image-only subreddits work too but have few comments.</p>
           <div class="sub-list" id="nsfwList">${settings.nsfwSubs.map(s => `<span class="sub-tag">r/${esc(s)}<button type="button" data-nremove="${esc(s)}" aria-label="Remove">×</button></span>`).join('') || '<span class="muted small">None yet.</span>'}</div>
-          <form class="linkrow" id="nsfwForm" style="margin-top:10px"><input id="nsfwInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Add an NSFW subreddit"><button class="btn" type="submit">Add</button></form>
+          <form class="linkrow" id="nsfwForm" style="margin-top:10px"><input id="nsfwInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. AskRedditAfterDark"><button class="btn" type="submit">Add</button></form>
         </div>
         <div class="field row-field"><label for="blurNsfw">Blur images until tapped</label><input type="checkbox" role="switch" class="toggle" id="blurNsfw" ${settings.blurNsfw ? 'checked' : ''}></div>
       </section>`
@@ -809,8 +809,14 @@ async function checkForUpdate() {
     location.reload();
   } catch {}
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { checkForUpdate(); checkSubs(false); } });
-window.addEventListener('online', () => checkSubs(false));
+// Auto-fill both libraries (Main, then Private if it has subreddits) so Private downloads
+// even while you're on Main. Each has its own "skip while plenty unread" guard.
+async function autoCheckAll() {
+  await checkSubs(false, 'main');
+  if (settings.nsfwSubs.length) await checkSubs(false, 'nsfw');
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { checkForUpdate(); autoCheckAll(); } });
+window.addEventListener('online', () => autoCheckAll());
 
 (async function start() {
   checkForUpdate();
@@ -820,5 +826,5 @@ window.addEventListener('online', () => checkSubs(false));
   for (const p of await db.all('posts')) { if (!(await db.get('threads', p.id))) { await db.del('posts', p.id); continue; } if (p.complete === undefined) { p.complete = true; delete p.status; delete p.error; await db.put('posts', p); } }
   for (const k of ['tk-token', 'tk-apptoken', 'tk-device', 'tk-syncerr', 'tk-grab', 'tk-setup-done', 'tk-nsfw-on']) { try { localStorage.removeItem(k); } catch {} }
   route();
-  checkSubs(false);
+  autoCheckAll();
 })();

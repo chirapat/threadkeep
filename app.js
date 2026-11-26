@@ -8,15 +8,20 @@
  */
 'use strict';
 
-const APP_VERSION = '3.0';
+const APP_VERSION = '3.2';
 const MEDIA_CACHE = 'tk-media-v1';
 const API = 'https://arctic-shift.photon-reddit.com/api';
 const MB = 1024 * 1024;
 
 /* ================= Settings ================= */
 
+// Built-in set of popular, comment-heavy subreddits for "Popular mix" mode.
+const POPULAR = ['AskReddit', 'explainlikeimfive', 'todayilearned', 'NoStupidQuestions', 'Showerthoughts', 'LifeProTips', 'tifu', 'AmItheAsshole', 'OutOfTheLoop', 'changemyview', 'askscience', 'YouShouldKnow', 'Damnthatsinteresting', 'mildlyinteresting', 'interestingasfuck'];
+
 const DEFAULTS = {
-  subs: [],                 // preferred subreddits, e.g. ['AskReddit']
+  subs: [],                 // Main library: your focus subreddits, e.g. ['AskReddit']
+  includePopular: true,     // Main library: also pull hot threads from the built-in popular mix
+  nsfwSubs: [],             // Private (NSFW) library: subreddits to download, e.g. ['gonewild']
   postsPerSub: 5,           // how many threads to grab per subreddit each check
   commentsPerThread: 100,   // size lever: max comments saved per thread
   autoCheck: 'open',        // 'off' | 'open' (on launch) | 'daily'
@@ -35,7 +40,7 @@ const settings = (() => {
   const saved = store.get('tk-settings', {}) || {};
   const s = { ...DEFAULTS };
   for (const k of Object.keys(DEFAULTS)) {
-    if (k === 'subs') { if (Array.isArray(saved.subs)) s.subs = saved.subs.slice(); }
+    if (k === 'subs' || k === 'nsfwSubs') { if (Array.isArray(saved[k])) s[k] = saved[k].slice(); }
     else if (typeof saved[k] === typeof DEFAULTS[k]) s[k] = saved[k];
   }
   if (saved.nsfw === 'hide') s.showNsfw = false;
@@ -180,21 +185,21 @@ function mediaOf(p) {
 
 /* ================= Arctic Shift data layer ================= */
 
-async function arctic(path, tries = 4) {
+async function arctic(path, tries = 7) {
   for (let i = 0; i < tries; i++) {
     let j;
     try { j = await (await fetch(API + path)).json(); }
     catch { if (!navigator.onLine) throw new Error('You’re offline.'); j = {}; }
-    if (j && j.error && /slow down|timeout/i.test(j.error)) { await sleep(1800); continue; }
+    if (j && j.error && /slow down|timeout/i.test(j.error)) { await sleep(2000 + i * 800); continue; } // back off on rate limit
     if (j && j.data != null) return j.data;
     if (i === tries - 1) throw new Error((j && j.error) || 'Couldn’t reach the Reddit archive. Try again.');
-    await sleep(900);
+    await sleep(1000 + i * 500);
   }
-  throw new Error('Couldn’t reach the Reddit archive.');
+  throw new Error('The Reddit archive is busy. Try again in a minute.');
 }
 
 // Mature window: threads old enough that the archive has their comments.
-async function fetchSubPosts(sub, pages = 3) {
+async function fetchSubPosts(sub, pages = 2) {
   const posts = []; let cursor = '14d'; // start just older than 14 days
   for (let pg = 0; pg < pages; pg++) {
     const q = new URLSearchParams({ subreddit: sub, limit: '100', sort: 'desc', after: '95d', before: cursor });
@@ -244,7 +249,7 @@ function buildCommentTree(flat, images) {
 const countComments = (list) => list.reduce((n, c) => n + 1 + countComments(c.r), 0);
 
 // Downloads a thread from the archive and saves it. Returns the post id, or null if there were no comments yet.
-async function saveThreadById(id, { fromSub = false, post = null } = {}) {
+async function saveThreadById(id, { fromSub = false, post = null, lib = currentLib() } = {}) {
   const p = post || await fetchPostById(id);
   if (!p || !p.id) throw new Error('That thread isn’t in the archive.');
   const flat = await fetchComments(p.id, settings.commentsPerThread);
@@ -270,7 +275,7 @@ async function saveThreadById(id, { fromSub = false, post = null } = {}) {
   await db.put('threads', thread);
 
   const thumb = thumbOf(p.preview) || media[0]?.url || null;
-  const row = { id: p.id, title: postObj.title, subreddit: postObj.subreddit, nsfw: postObj.nsfw, savedComments: saved, numComments: postObj.numComments,
+  const row = { id: p.id, title: postObj.title, subreddit: postObj.subreddit, nsfw: postObj.nsfw, lib: existing?.lib || lib, savedComments: saved, numComments: postObj.numComments,
     savedAt: existing?.savedAt || Date.now(), pinned: !!existing?.pinned, fromSub: existing ? !!existing.fromSub : fromSub, thumb, media: [], bytes: tBytes, textOnly: false, complete: false };
   await db.put('posts', row);
   for (const url of [...new Set([...(thumb ? [thumb] : []), ...media.map(m => m.url), ...images])]) {
@@ -312,36 +317,68 @@ async function deletePost(id) { const row = await db.get('posts', id); await db.
 /* ================= Auto-download ================= */
 
 let syncing = false;
-const lastSync = () => store.get('tk-lastsync', 0);
+const lastSync = (lib) => store.get('tk-lastsync-' + lib, 0);
 
-async function checkSubs(force) {
-  if (syncing || !navigator.onLine || !settings.subs.length) return;
-  if (!force) { if (settings.autoCheck === 'off') return; if (settings.autoCheck === 'daily' && Date.now() - lastSync() < 86400000) return; }
+// Current surface: 'main' (SFW) or 'nsfw' (Private). Resets to main when the app is fully reopened.
+function currentLib() { try { return sessionStorage.getItem('tk-lib') === 'nsfw' ? 'nsfw' : 'main'; } catch { return 'main'; } }
+function setLib(v) { try { sessionStorage.setItem('tk-lib', v); } catch {} }
+
+// Subreddits to check for a library. Main = focus subs + rotating popular mix. Private = your NSFW subs.
+function sourcesFor(lib) {
+  if (lib === 'nsfw') return settings.nsfwSubs.slice();
+  const mine = settings.subs.slice();
+  const lower = new Set(mine.map(s => s.toLowerCase()));
+  let extra = [];
+  if (settings.includePopular) {
+    const i = store.get('tk-popidx', 0) % POPULAR.length;
+    const rotated = POPULAR.slice(i).concat(POPULAR.slice(0, i));
+    store.set('tk-popidx', (i + 6) % POPULAR.length);
+    extra = rotated.filter(s => !lower.has(s.toLowerCase())).slice(0, 6);
+  }
+  return [...mine, ...extra];
+}
+
+async function checkSubs(force, lib = currentLib()) {
+  const sources = sourcesFor(lib);
+  if (syncing || !navigator.onLine || !sources.length) return;
+  if (!force) { if (settings.autoCheck === 'off') return; if (settings.autoCheck === 'daily' && Date.now() - lastSync(lib) < 86400000) return; }
   syncing = true;
-  let total = 0, failed = '';
+  let total = 0, failed = '', budgetFull = false;
+  const nsfwLib = lib === 'nsfw';
+  const nearFull = async () => (await usedBytes()) >= limitBytes() * 0.95;
   try {
-    for (const sub of settings.subs) {
+    for (let si = 0; si < sources.length; si++) {
+      const sub = sources[si];
+      if (await nearFull()) { budgetFull = true; break; }
+      if (si > 0) await sleep(1200); // space subreddits so the archive doesn't throttle us
       let posts;
-      try { progress('Checking r/' + sub + '…', 0.03); posts = await fetchSubPosts(sub, 3); }
-      catch (e) { failed = 'r/' + sub + ': ' + e.message; continue; }
+      try { progress('Checking r/' + sub + '…', 0.03); posts = await fetchSubPosts(sub); }
+      catch (e) {
+        try { await sleep(3000); posts = await fetchSubPosts(sub); }
+        catch (e2) { failed = 'r/' + sub + ': ' + e2.message; continue; }
+      }
       const existing = new Set((await db.all('posts')).map(p => p.id));
-      posts = posts.filter(p => p && !p.stickied && (p.num_comments || 0) > 3 && !seen.has(p.id) && !existing.has(p.id) && (settings.autoNsfw || !p.over_18));
+      // Main library never saves NSFW; the Private library saves whatever its subs return.
+      posts = posts.filter(p => p && !p.stickied && (p.num_comments || 0) > 3 && !seen.has(p.id) && !existing.has(p.id) && (nsfwLib || !p.over_18));
       posts.sort((a, b) => (b.num_comments || 0) - (a.num_comments || 0));
       const pick = posts.slice(0, settings.postsPerSub);
       for (let i = 0; i < pick.length; i++) {
+        if (await nearFull()) { budgetFull = true; break; }
         progress('r/' + sub + ': saving ' + (i + 1) + ' of ' + pick.length + '…', (i + 1) / (pick.length + 1));
-        try { const id = await saveThreadById(pick[i].id, { fromSub: true, post: pick[i] }); if (id) total++; }
-        catch (e) { if (/Storage is full/.test(e.message)) { failed = e.message; break; } }
+        try { const id = await saveThreadById(pick[i].id, { fromSub: true, post: pick[i], lib }); if (id) total++; }
+        catch (e) { if (/Storage is full/.test(e.message)) { budgetFull = true; break; } }
         seen.add([pick[i].id]);
       }
       seen.add(pick.map(p => p.id));
-      if (/Storage is full/.test(failed)) break;
+      if (budgetFull) break;
     }
-    store.set('tk-lastsync', Date.now());
+    store.set('tk-lastsync-' + lib, Date.now());
   } finally { syncing = false; progress(null); }
-  if (total) toast('Saved ' + plural(total, 'new thread') + ' from your subreddits.', 4000);
+  if (total && budgetFull) toast('Saved ' + plural(total, 'thread') + '. Storage is full — raise the limit or delete some to get more.', 6000);
+  else if (total) toast('Saved ' + plural(total, 'new thread') + '.', 4000);
+  else if (budgetFull) toast('Storage is full. Raise the limit or delete some threads in Settings.', 6000);
   else if (failed) toast(failed, 6000);
-  else if (force) toast('No new threads right now. Try again later, or add more subreddits.', 5000);
+  else if (force) toast('No new threads right now — the archive may be busy. Try again in a minute.', 6000);
   render();
 }
 
@@ -376,29 +413,35 @@ function installCardHtml() {
 }
 
 async function renderHome() {
-  setHeader('ThreadKeep', false);
-  const posts = (await db.all('posts')).sort((a, b) => b.savedAt - a.savedAt);
-  const used = posts.reduce((n, p) => n + (p.bytes || 0), 0);
+  const lib = currentLib();
+  setHeader(lib === 'nsfw' ? '🔒 Private' : 'ThreadKeep', false);
+  const all = await db.all('posts');
+  const posts = all.filter(p => (p.lib || 'main') === lib).sort((a, b) => b.savedAt - a.savedAt);
+  const used = all.reduce((n, p) => n + (p.bytes || 0), 0);
   const pct = Math.min(100, used / limitBytes() * 100);
-  const nsfwCount = posts.filter(p => p.nsfw).length;
-  const visible = settings.showNsfw ? posts : posts.filter(p => !p.nsfw);
-  const subCounts = {}; for (const p of visible) if (p.subreddit) subCounts[p.subreddit] = (subCounts[p.subreddit] || 0) + 1;
-  const subs = Object.keys(subCounts).sort((a, b) => subCounts[b] - subCounts[a]);
+  const nsfwCount = all.filter(p => (p.lib || 'main') === 'nsfw').length;
+  const subCounts = {}; for (const p of posts) if (p.subreddit) subCounts[p.subreddit] = (subCounts[p.subreddit] || 0) + 1;
+  const subChips = Object.keys(subCounts).sort((a, b) => subCounts[b] - subCounts[a]);
   if (filterSub && !subCounts[filterSub]) filterSub = '';
   const q = search.toLowerCase();
-  const shown = visible.filter(p => (!filterSub || p.subreddit === filterSub) && (!q || (p.title + ' ' + p.subreddit).toLowerCase().includes(q)));
-  const ls = lastSync();
+  const shown = posts.filter(p => (!filterSub || p.subreddit === filterSub) && (!q || (p.title + ' ' + p.subreddit).toLowerCase().includes(q)));
+  const ls = lastSync(lib);
+  const srcLabel = lib === 'nsfw'
+    ? (settings.nsfwSubs.map(s => 'r/' + esc(s)).join('  ') || 'No subreddits yet')
+    : (settings.subs.map(s => 'r/' + esc(s)).join('  ') + (settings.includePopular ? (settings.subs.length ? '  + popular mix' : 'Popular mix') : '')) || 'Nothing selected';
+  const hasSources = sourcesFor(lib).length > 0;
 
   view.innerHTML = `
+    <div class="libswitch" id="libswitch">
+      <button data-lib="main" aria-pressed="${lib === 'main'}">Main</button>
+      <button data-lib="nsfw" aria-pressed="${lib === 'nsfw'}">🔒 Private${nsfwCount ? ` <small>${nsfwCount}</small>` : ''}</button>
+    </div>
     ${installCardHtml()}
-    ${settings.subs.length ? `<section class="sync">
-        <div><div class="sync-subs">${settings.subs.map(s => 'r/' + esc(s)).join('  ')}</div>
-          <div class="muted small">${ls ? 'Checked ' + fmtAgo(ls / 1000) + ' ago' : 'Not checked yet'} · top ${settings.postsPerSub} by discussion</div></div>
-        <button class="btn small" id="checkBtn">${ICONS.refresh} Check now</button>
-      </section>`
-      : `<section class="card setup"><h2>Pick your subreddits</h2>
-          <p class="muted">ThreadKeep auto-saves the most-discussed threads (with all comments) from subreddits you choose, to read offline. Free, no Reddit account.</p>
-          <a class="btn primary block" href="#/settings">Choose subreddits →</a></section>`}
+    <section class="sync">
+      <div><div class="sync-subs">${srcLabel}</div>
+        <div class="muted small">${ls ? 'Checked ' + fmtAgo(ls / 1000) + ' ago' : 'Not checked yet'}${hasSources ? ' · most-discussed threads' : ''}</div></div>
+      ${hasSources ? `<button class="btn small" id="checkBtn">${ICONS.refresh} Check now</button>` : `<a class="btn small" href="#/settings">Set up</a>`}
+    </section>
 
     <form class="linkrow" id="linkForm">
       <input id="linkInput" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Or paste a reddit.com thread link">
@@ -406,19 +449,16 @@ async function renderHome() {
     </form>
 
     ${posts.length ? `
-      <div class="toolbar">
-        <div class="gauge"><div class="gauge-bar"><div class="gauge-fill ${pct >= 95 ? 'full' : ''}" style="width:${pct}%"></div></div><span>${fmtBytes(used)} of ${fmtBytes(limitBytes())}</span></div>
-        <label class="switch"><span>NSFW${nsfwCount && !settings.showNsfw ? ` <small>(${nsfwCount} hidden)</small>` : ''}</span><input type="checkbox" role="switch" class="toggle" id="nsfwToggle" ${settings.showNsfw ? 'checked' : ''}></label>
-      </div>
-      ${subs.length > 1 ? `<div class="chips" id="chips"><button data-sub="" aria-pressed="${!filterSub}">All <small>${visible.length}</small></button>${subs.map(s => `<button data-sub="${esc(s)}" aria-pressed="${filterSub === s}">r/${esc(s)} <small>${subCounts[s]}</small></button>`).join('')}</div>` : ''}
-      ${visible.length > 6 ? `<input type="search" id="search" class="search" placeholder="Search saved threads" value="${esc(search)}">` : ''}
+      <div class="toolbar"><div class="gauge"><div class="gauge-bar"><div class="gauge-fill ${pct >= 95 ? 'full' : ''}" style="width:${pct}%"></div></div><span>${fmtBytes(used)} of ${fmtBytes(limitBytes())} total</span></div></div>
+      ${subChips.length > 1 ? `<div class="chips" id="chips"><button data-sub="" aria-pressed="${!filterSub}">All <small>${posts.length}</small></button>${subChips.map(s => `<button data-sub="${esc(s)}" aria-pressed="${filterSub === s}">r/${esc(s)} <small>${subCounts[s]}</small></button>`).join('')}</div>` : ''}
+      ${posts.length > 6 ? `<input type="search" id="search" class="search" placeholder="Search saved threads" value="${esc(search)}">` : ''}
       <div class="list">${shown.map(itemHtml).join('') || '<p class="empty muted">Nothing matches.</p>'}</div>`
-      : `<p class="empty muted">No saved threads yet.${settings.subs.length ? ' Tap <b>Check now</b> above.' : ''}</p>`}`;
+      : `<p class="empty muted">No saved threads in ${lib === 'nsfw' ? 'your Private library' : 'this library'} yet.${hasSources ? ' Tap <b>Check now</b> above.' : lib === 'nsfw' ? ' Add NSFW subreddits in Settings.' : ''}</p>`}`;
 
-  const cb = $('#checkBtn'); if (cb) cb.onclick = () => checkSubs(true);
+  $('#libswitch').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; setLib(b.dataset.lib); filterSub = ''; search = ''; renderHome(); };
+  const cb = $('#checkBtn'); if (cb) cb.onclick = () => checkSubs(true, lib);
   $('#linkForm').onsubmit = (e) => { e.preventDefault(); const v = $('#linkInput').value; $('#linkInput').value = ''; savePostFromLink(v); };
   const ic = $('#installClose'); if (ic) ic.onclick = () => { try { sessionStorage.setItem('tk-install-hidden', '1'); } catch {} renderHome(); };
-  const nt = $('#nsfwToggle'); if (nt) nt.onchange = () => { settings.showNsfw = nt.checked; saveSettings(); renderHome(); };
   const ch = $('#chips'); if (ch) ch.onclick = (e) => { const b = e.target.closest('button'); if (b) { filterSub = b.dataset.sub; renderHome(); } };
   const se = $('#search'); if (se) se.oninput = () => { search = se.value; const pos = se.selectionStart; renderHome().then(() => { const n = $('#search'); if (n) { n.focus(); n.setSelectionRange(pos, pos); } }); };
 }
@@ -479,9 +519,11 @@ async function renderSettings() {
   setHeader('Settings', true);
   const used = await usedBytes(); let persisted = false; try { persisted = await navigator.storage.persisted(); } catch {}
   view.innerHTML = `
-    <section class="group"><h3>Subreddits to auto-save</h3>
+    <section class="group"><h3>What to auto-save</h3>
+      <div class="field row-field"><label for="incPop">Popular mix <span class="muted small">(hot threads from across Reddit)</span></label><input type="checkbox" role="switch" class="toggle" id="incPop" ${settings.includePopular ? 'checked' : ''}></div>
       <div class="field">
-        <div class="sub-list">${settings.subs.map(s => `<span class="sub-tag">r/${esc(s)}<button type="button" data-remove="${esc(s)}" aria-label="Remove">×</button></span>`).join('') || '<span class="muted small">None yet.</span>'}</div>
+        <label>Your focus subreddits</label>
+        <div class="sub-list" id="mainSubList">${settings.subs.map(s => `<span class="sub-tag">r/${esc(s)}<button type="button" data-remove="${esc(s)}" aria-label="Remove">×</button></span>`).join('') || '<span class="muted small">None yet — the popular mix will be used.</span>'}</div>
         <form class="linkrow" id="subForm" style="margin-top:10px"><input id="subInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Add a subreddit, e.g. AskReddit"><button class="btn" type="submit">Add</button></form>
       </div>
       <div class="field"><label>Threads per subreddit, each check</label>${seg('postsPerSub', [[3, '3'], [5, '5'], [10, '10'], [25, '25']], settings.postsPerSub)}
@@ -492,15 +534,18 @@ async function renderSettings() {
 
     <section class="group"><h3>Download size</h3>
       <div class="field"><label>Comments saved per thread</label>${seg('commentsPerThread', [[50, '50'], [100, '100'], [200, '200'], [500, '500']], settings.commentsPerThread)}</div>
-      <div class="field"><label>Total storage</label>${seg('limitMB', [[250, '250 MB'], [500, '500 MB'], [1000, '1 GB'], [2000, '2 GB']], settings.limitMB)}
+      <div class="field"><label>Total storage</label>${seg('limitMB', [[50, '50 MB'], [250, '250 MB'], [500, '500 MB'], [1000, '1 GB'], [2000, '2 GB']], settings.limitMB)}
         <p class="muted small">Using ${fmtBytes(used)}.${persisted ? '' : ' Open from your Home Screen so iPhone keeps your threads.'}</p></div>
       <div class="field"><label>When storage is full</label>${seg('whenFull', [['evict', 'Remove oldest'], ['stop', 'Stop saving']], settings.whenFull)}
         <p class="muted small">Auto-saved threads go first; ones you <b>Keep</b> are never removed.</p></div>
     </section>
 
-    <section class="group"><h3>NSFW</h3>
-      <div class="field row-field"><label for="showNsfw">Show NSFW in my library</label><input type="checkbox" role="switch" class="toggle" id="showNsfw" ${settings.showNsfw ? 'checked' : ''}></div>
-      <div class="field row-field"><label for="autoNsfw">Auto-download NSFW threads</label><input type="checkbox" role="switch" class="toggle" id="autoNsfw" ${settings.autoNsfw ? 'checked' : ''}></div>
+    <section class="group"><h3>🔒 Private library (NSFW)</h3>
+      <div class="field">
+        <p class="muted small" style="margin:0 0 8px">A separate surface. Switch to it with the <b>Private</b> tab at the top of the home page. These subreddits download only there.</p>
+        <div class="sub-list" id="nsfwList">${settings.nsfwSubs.map(s => `<span class="sub-tag">r/${esc(s)}<button type="button" data-nremove="${esc(s)}" aria-label="Remove">×</button></span>`).join('') || '<span class="muted small">None yet.</span>'}</div>
+        <form class="linkrow" id="nsfwForm" style="margin-top:10px"><input id="nsfwInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Add an NSFW subreddit"><button class="btn" type="submit">Add</button></form>
+      </div>
       <div class="field row-field"><label for="blurNsfw">Blur NSFW images until tapped</label><input type="checkbox" role="switch" class="toggle" id="blurNsfw" ${settings.blurNsfw ? 'checked' : ''}></div>
     </section>
 
@@ -517,10 +562,11 @@ async function renderSettings() {
     s.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     if (key === 'limitMB') makeRoom(0);
   }));
-  $('#subForm').onsubmit = (e) => { e.preventDefault(); const name = cleanSub($('#subInput').value); if (!name) { toast('Type a subreddit name, e.g. AskReddit.'); return; } if (settings.subs.some(s => s.toLowerCase() === name.toLowerCase())) { toast('Already added.'); return; } settings.subs.push(name); saveSettings(); renderSettings(); checkSubs(true); };
-  $('.sub-list').onclick = (e) => { const b = e.target.closest('[data-remove]'); if (!b) return; settings.subs = settings.subs.filter(s => s !== b.dataset.remove); saveSettings(); renderSettings(); };
-  $('#showNsfw').onchange = (e) => { settings.showNsfw = e.target.checked; saveSettings(); };
-  $('#autoNsfw').onchange = (e) => { settings.autoNsfw = e.target.checked; saveSettings(); };
+  $('#subForm').onsubmit = (e) => { e.preventDefault(); const name = cleanSub($('#subInput').value); if (!name) { toast('Type a subreddit name, e.g. AskReddit.'); return; } if (settings.subs.some(s => s.toLowerCase() === name.toLowerCase())) { toast('Already added.'); return; } settings.subs.push(name); saveSettings(); renderSettings(); checkSubs(true, 'main'); };
+  $('#mainSubList').onclick = (e) => { const b = e.target.closest('[data-remove]'); if (!b) return; settings.subs = settings.subs.filter(s => s !== b.dataset.remove); saveSettings(); renderSettings(); };
+  $('#nsfwForm').onsubmit = (e) => { e.preventDefault(); const name = cleanSub($('#nsfwInput').value); if (!name) { toast('Type a subreddit name.'); return; } if (settings.nsfwSubs.some(s => s.toLowerCase() === name.toLowerCase())) { toast('Already added.'); return; } settings.nsfwSubs.push(name); saveSettings(); renderSettings(); };
+  $('#nsfwList').onclick = (e) => { const b = e.target.closest('[data-nremove]'); if (!b) return; settings.nsfwSubs = settings.nsfwSubs.filter(s => s !== b.dataset.nremove); saveSettings(); renderSettings(); };
+  $('#incPop').onchange = (e) => { settings.includePopular = e.target.checked; saveSettings(); };
   $('#blurNsfw').onchange = (e) => { settings.blurNsfw = e.target.checked; saveSettings(); };
   $('#wipe').onclick = async () => { if (!confirm('Delete every saved thread and image from this phone?')) return; for (const p of await db.all('posts')) await deletePost(p.id); await caches.delete(MEDIA_CACHE); store.set('tk-seen', []); toast('Everything deleted.'); renderSettings(); };
 }
